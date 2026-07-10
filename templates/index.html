@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>US Equity Sentiment · Entry Timing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --bg-elevated: #121820;
+      --bg-card: #161e28;
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e8eef6;
+      --muted: #8b9bb0;
+      --dim: #5c6b7e;
+      --accent: #5b9fd4;
+      --green: #3dd68c;
+      --green-dim: rgba(61, 214, 140, 0.15);
+      --yellow: #e8c547;
+      --yellow-dim: rgba(232, 197, 71, 0.12);
+      --orange: #f0a05a;
+      --orange-dim: rgba(240, 160, 90, 0.12);
+      --red: #f07178;
+      --red-dim: rgba(240, 113, 120, 0.12);
+      --blue: #6cb6ff;
+      --purple: #b48ead;
+      --radius: 16px;
+      --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "DM Sans", system-ui, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(91, 159, 212, 0.12), transparent 55%),
+        radial-gradient(900px 500px at 90% 0%, rgba(61, 214, 140, 0.07), transparent 50%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    h1 {
+      font-size: clamp(1.6rem, 3vw, 2.1rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+      max-width: 520px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .meta {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      color: var(--dim);
+    }
+
+    button {
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.9rem;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text);
+      padding: 10px 16px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+
+    button:hover {
+      background: #1a2430;
+      border-color: rgba(255, 255, 255, 0.16);
+    }
+
+    button:active { transform: scale(0.98); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+
+    /* Conclusion hero */
+    .hero {
+      background: linear-gradient(145deg, #1a2430 0%, #121820 100%);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius) + 4px);
+      padding: 28px 28px 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--verdict-color, var(--yellow));
+    }
+
+    .hero.strong-buy { --verdict-color: var(--green); }
+    .hero.buy { --verdict-color: #6fdc9f; }
+    .hero.neutral { --verdict-color: var(--yellow); }
+    .hero.caution { --verdict-color: var(--orange); }
+    .hero.avoid { --verdict-color: var(--red); }
+
+    .hero-top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 16px;
+    }
+
+    .verdict-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .verdict {
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--verdict-color, var(--text));
+    }
+
+    .score-box {
+      text-align: right;
+      min-width: 140px;
+    }
+
+    .score-num {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 2rem;
+      font-weight: 600;
+      line-height: 1;
+    }
+
+    .score-scale {
+      font-size: 12px;
+      color: var(--dim);
+      margin-top: 4px;
+    }
+
+    .meter {
+      height: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 99px;
+      margin: 18px 0 8px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .meter-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--red), var(--yellow), var(--green));
+      width: 50%;
+      transition: width 0.6s ease;
+    }
+
+    .meter-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--dim);
+      margin-bottom: 18px;
+    }
+
+    .summary {
+      font-size: 1.05rem;
+      color: var(--text);
+      max-width: 860px;
+      margin-bottom: 14px;
+    }
+
+    .details {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .details li {
+      font-size: 0.9rem;
+      color: var(--muted);
+      padding-left: 14px;
+      position: relative;
+    }
+
+    .details li::before {
+      content: "▸";
+      position: absolute;
+      left: 0;
+      color: var(--dim);
+    }
+
+    /* Cards grid */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    @media (min-width: 1100px) {
+      .grid { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    @media (max-width: 700px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .card.vix-entry {
+      border-color: rgba(61, 214, 140, 0.45);
+      box-shadow: 0 0 0 1px rgba(61, 214, 140, 0.15), var(--shadow);
+    }
+
+    .entry-flag {
+      display: none;
+      margin-top: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--green);
+      background: var(--green-dim);
+      padding: 6px 10px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .entry-flag.show { display: block; }
+
+    .vix-bar {
+      height: 10px;
+      border-radius: 99px;
+      background: linear-gradient(90deg, #3dd68c 0%, #e8c547 40%, #f0a05a 60%, #f07178 100%);
+      position: relative;
+      margin: 6px 0 4px;
+    }
+
+    .vix-needle {
+      position: absolute;
+      top: -4px;
+      width: 4px;
+      height: 18px;
+      background: #fff;
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.5);
+      transform: translateX(-50%);
+      transition: left 0.5s ease;
+    }
+
+    .vix-mark {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 2px;
+      background: rgba(255,255,255,0.85);
+      left: 50%; /* 30 on 0–60 scale */
+      transform: translateX(-50%);
+    }
+
+    .vix-scale {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--dim);
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 280px;
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .card h2 {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .card .src {
+      font-size: 11px;
+      color: var(--dim);
+      margin-top: 2px;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 9px;
+      border-radius: 99px;
+      white-space: nowrap;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted);
+    }
+
+    .badge.pos { background: var(--green-dim); color: var(--green); }
+    .badge.neg { background: var(--red-dim); color: var(--red); }
+    .badge.mid { background: var(--yellow-dim); color: var(--yellow); }
+
+    .big-value {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 2.6rem;
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .big-value .unit {
+      font-size: 1rem;
+      color: var(--muted);
+      font-weight: 500;
+      margin-left: 2px;
+    }
+
+    .rating {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .rating.fear, .rating.extreme-fear { color: var(--blue); }
+    .rating.greed, .rating.extreme-greed { color: var(--orange); }
+    .rating.neutral { color: var(--yellow); }
+
+    .fg-bar {
+      height: 10px;
+      border-radius: 99px;
+      background: linear-gradient(90deg, #3b82f6, #94a3b8, #f59e0b, #ef4444);
+      position: relative;
+      margin: 6px 0 4px;
+    }
+
+    .fg-needle {
+      position: absolute;
+      top: -4px;
+      width: 4px;
+      height: 18px;
+      background: #fff;
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.5);
+      transform: translateX(-50%);
+      transition: left 0.5s ease;
+    }
+
+    .fg-scale {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--dim);
+    }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat {
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 10px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .stat .k {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--dim);
+      margin-bottom: 4px;
+    }
+
+    .stat .v {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .stat .v.bull { color: var(--green); }
+    .stat .v.bear { color: var(--red); }
+    .stat .v.neut { color: var(--muted); }
+
+    .signal {
+      margin-top: auto;
+      font-size: 0.85rem;
+      color: var(--muted);
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+
+    .signal strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .deltas {
+      font-size: 12px;
+      color: var(--dim);
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    /* How it works */
+    .panel {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+    }
+
+    .panel h3 {
+      font-size: 0.95rem;
+      margin-bottom: 10px;
+    }
+
+    .panel p, .panel li {
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+
+    .panel ul {
+      margin: 10px 0 0 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .disclaimer {
+      margin-top: 20px;
+      font-size: 0.8rem;
+      color: var(--dim);
+      border-left: 3px solid rgba(255, 255, 255, 0.1);
+      padding-left: 12px;
+    }
+
+    .error-banner {
+      background: var(--red-dim);
+      border: 1px solid rgba(240, 113, 120, 0.35);
+      color: #ffb4b8;
+      padding: 12px 16px;
+      border-radius: 10px;
+      margin-bottom: 16px;
+      font-size: 0.9rem;
+      display: none;
+    }
+
+    .loading {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+
+    .skeleton {
+      background: linear-gradient(90deg, #1a2230 25%, #243040 50%, #1a2230 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s infinite;
+      border-radius: 8px;
+      color: transparent !important;
+    }
+
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    footer {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--dim);
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="eyebrow">Market Sentiment · Contrarian Lens</div>
+        <h1>Is it time to enter US equities?</h1>
+        <p class="subtitle">
+          Live read on VIX, Fear &amp; Greed, AAII survey, and NAAIM exposure —
+          scored for US equity entry timing. <strong style="color:var(--green)">VIX &gt; 30 = entry zone</strong>.
+        </p>
+      </div>
+      <div class="actions">
+        <span class="meta" id="fetchedAt">Loading…</span>
+        <button id="refreshBtn" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <div class="error-banner" id="errorBanner"></div>
+
+    <section class="hero neutral" id="hero">
+      <div class="hero-top">
+        <div>
+          <div class="verdict-label">Conclusion</div>
+          <div class="verdict skeleton" id="verdict">Loading verdict…</div>
+        </div>
+        <div class="score-box">
+          <div class="verdict-label">Sentiment score</div>
+          <div class="score-num skeleton" id="scoreNum">0</div>
+          <div class="score-scale" id="scoreScale">−6 (avoid) → +6 (buy zone)</div>
+        </div>
+      </div>
+      <div class="meter"><div class="meter-fill" id="meterFill"></div></div>
+      <div class="meter-labels">
+        <span>Poor entry</span>
+        <span>Neutral</span>
+        <span>Favorable entry</span>
+      </div>
+      <p class="summary skeleton" id="summary">Fetching market sentiment data…</p>
+      <ul class="details" id="details"></ul>
+    </section>
+
+    <section class="grid" id="cards">
+      <!-- VIX -->
+      <article class="card" id="cardVix">
+        <div class="card-head">
+          <div>
+            <h2>VIX (S&amp;P 500)</h2>
+            <div class="src"><a href="https://finance.yahoo.com/quote/%5EVIX/" target="_blank" rel="noopener">CBOE / Yahoo</a> · live</div>
+          </div>
+          <span class="badge" id="vixBadge">—</span>
+        </div>
+        <div>
+          <div class="big-value skeleton" id="vixValue">—</div>
+          <div class="rating" id="vixRating">CBOE Volatility Index</div>
+        </div>
+        <div>
+          <div class="vix-bar">
+            <div class="vix-mark" title="Entry threshold = 30"></div>
+            <div class="vix-needle" id="vixNeedle" style="left:25%"></div>
+          </div>
+          <div class="vix-scale"><span>Calm</span><span>30 entry</span><span>Panic</span></div>
+        </div>
+        <div class="deltas" id="vixDeltas">Threshold: VIX &gt; 30 = entry point</div>
+        <div class="entry-flag" id="vixEntryFlag">Entry zone active</div>
+        <div class="signal" id="vixSignal"><strong>Signal:</strong> —</div>
+      </article>
+
+      <!-- Fear & Greed -->
+      <article class="card" id="cardFg">
+        <div class="card-head">
+          <div>
+            <h2>Fear &amp; Greed Index</h2>
+            <div class="src"><a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" rel="noopener">CNN</a> · daily</div>
+          </div>
+          <span class="badge" id="fgBadge">—</span>
+        </div>
+        <div>
+          <div class="big-value skeleton" id="fgValue">—</div>
+          <div class="rating" id="fgRating">—</div>
+        </div>
+        <div>
+          <div class="fg-bar"><div class="fg-needle" id="fgNeedle" style="left:50%"></div></div>
+          <div class="fg-scale"><span>Fear</span><span>Neutral</span><span>Greed</span></div>
+        </div>
+        <div class="deltas" id="fgDeltas">—</div>
+        <div class="signal" id="fgSignal"><strong>Signal:</strong> —</div>
+      </article>
+
+      <!-- AAII -->
+      <article class="card" id="cardAaii">
+        <div class="card-head">
+          <div>
+            <h2>AAII Survey</h2>
+            <div class="src"><a href="https://www.aaii.com/sentimentsurvey" target="_blank" rel="noopener">AAII</a> · weekly</div>
+          </div>
+          <span class="badge" id="aaiiBadge">—</span>
+        </div>
+        <div class="stat-row">
+          <div class="stat">
+            <div class="k">Bullish</div>
+            <div class="v bull skeleton" id="aaiiBull">—</div>
+          </div>
+          <div class="stat">
+            <div class="k">Neutral</div>
+            <div class="v neut skeleton" id="aaiiNeut">—</div>
+          </div>
+          <div class="stat">
+            <div class="k">Bearish</div>
+            <div class="v bear skeleton" id="aaiiBear">—</div>
+          </div>
+        </div>
+        <div class="deltas" id="aaiiMeta">Hist. avg: 37.5% / 31.5% / 31.0%</div>
+        <div class="signal" id="aaiiSignal"><strong>Signal:</strong> —</div>
+      </article>
+
+      <!-- NAAIM -->
+      <article class="card" id="cardNaaim">
+        <div class="card-head">
+          <div>
+            <h2>NAAIM Exposure</h2>
+            <div class="src"><a href="https://naaim.org/programs/naaim-exposure-index/" target="_blank" rel="noopener">NAAIM</a> · weekly</div>
+          </div>
+          <span class="badge" id="naaimBadge">—</span>
+        </div>
+        <div>
+          <div class="big-value skeleton" id="naaimValue">—<span class="unit">%</span></div>
+          <div class="rating" id="naaimRating">Active managers’ avg equity exposure</div>
+        </div>
+        <div class="stat-row">
+          <div class="stat">
+            <div class="k">Prior week</div>
+            <div class="v" id="naaimPrior">—</div>
+          </div>
+          <div class="stat">
+            <div class="k">Q avg</div>
+            <div class="v" id="naaimQ">—</div>
+          </div>
+          <div class="stat">
+            <div class="k">As of</div>
+            <div class="v" id="naaimDate" style="font-size:0.8rem">—</div>
+          </div>
+        </div>
+        <div class="signal" id="naaimSignal"><strong>Signal:</strong> —</div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h3>How the score works</h3>
+      <p>
+        Each indicator is scored from <strong style="color:var(--text)">−2 to +2</strong> using a
+        <em>contrarian</em> framework: fear / stress favors entry; greed / complacency does not.
+      </p>
+      <ul>
+        <li><strong style="color:var(--text)">VIX</strong> — <strong style="color:var(--green)">VIX &gt; 30 is an entry point</strong> (+2). Low VIX (complacency) scores negative.</li>
+        <li><strong style="color:var(--text)">Fear &amp; Greed</strong> — lower readings favor entry; extreme greed scores negative.</li>
+        <li><strong style="color:var(--text)">AAII</strong> — high bearish % (or deeply negative bull−bear spread) is a buy signal.</li>
+        <li><strong style="color:var(--text)">NAAIM</strong> — low manager equity exposure favors entry; &gt;100% is leveraged/crowded.</li>
+      </ul>
+      <p class="disclaimer" id="disclaimer">
+        Educational / research tool only — not investment advice. Sentiment indicators are noisy
+        and work best as context, not a standalone timing system.
+      </p>
+    </section>
+
+    <footer>
+      Data from VIX (Yahoo), CNN, AAII, NAAIM · Cached 5 minutes
+    </footer>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function ptsBadge(points) {
+      if (points == null) return { text: "n/a", cls: "" };
+      if (points >= 1) return { text: `+${points} entry favor`, cls: "pos" };
+      if (points <= -1) return { text: `${points} caution`, cls: "neg" };
+      return { text: "0 neutral", cls: "mid" };
+    }
+
+    function fmtDelta(cur, prev, digits = 1) {
+      if (prev == null || cur == null) return "—";
+      const d = cur - prev;
+      const sign = d > 0 ? "+" : "";
+      return `${sign}${d.toFixed(digits)}`;
+    }
+
+    function setSkeleton(on) {
+      document.querySelectorAll(".skeleton").forEach((el) => {
+        if (on) el.classList.add("skeleton");
+        else el.classList.remove("skeleton");
+      });
+    }
+
+    function render(data) {
+      const c = data.conclusion || {};
+      const fg = data.fear_greed || {};
+      const aaii = data.aaii || {};
+      const naaim = data.naaim || {};
+      const vix = data.vix || {};
+      const scores = c.scores || {};
+
+      // Hero
+      const hero = $("hero");
+      hero.className = "hero " + (c.verdict_class || "neutral");
+      $("verdict").textContent = c.verdict || "—";
+      $("summary").textContent = c.summary || "—";
+      $("scoreNum").textContent =
+        (c.total_points > 0 ? "+" : "") + (c.total_points ?? "—");
+      $("scoreScale").textContent =
+        `${c.min_points ?? -8} (avoid) → +${c.max_points ?? 8} (buy zone)`;
+
+      // Meter: map [min,max] → 0–100%
+      const minP = c.min_points ?? -8;
+      const maxP = c.max_points ?? 8;
+      const total = c.total_points ?? 0;
+      const pct = ((total - minP) / (maxP - minP)) * 100;
+      $("meterFill").style.width = Math.max(4, Math.min(100, pct)) + "%";
+
+      const details = $("details");
+      details.innerHTML = "";
+      (c.details || []).forEach((line) => {
+        const li = document.createElement("li");
+        li.textContent = line;
+        details.appendChild(li);
+      });
+
+      if (c.disclaimer) $("disclaimer").textContent = c.disclaimer;
+
+      // VIX
+      const cardVix = $("cardVix");
+      if (vix.ok) {
+        $("vixValue").textContent = vix.value;
+        const inZone = !!vix.entry_zone || vix.value > 30;
+        $("vixRating").textContent = inZone
+          ? "ENTRY ZONE — VIX > 30"
+          : (scores.vix?.label || "Below entry threshold");
+        $("vixRating").className = "rating " + (inZone ? "fear" : "neutral");
+        // Map 0–60 VIX onto bar (30 sits at 50%)
+        const needlePct = Math.max(0, Math.min(100, (vix.value / 60) * 100));
+        $("vixNeedle").style.left = needlePct + "%";
+        $("vixDeltas").textContent =
+          `Prev ${vix.previous_close ?? "—"} · 1w ${fmtDelta(vix.value, vix.previous_1_week)} · 1m ${fmtDelta(vix.value, vix.previous_1_month)} · rule: >30 entry`;
+        const b = ptsBadge(scores.vix?.points);
+        $("vixBadge").textContent = inZone ? "+2 ENTRY" : b.text;
+        $("vixBadge").className = "badge " + (inZone ? "pos" : b.cls);
+        $("vixSignal").innerHTML =
+          `<strong>Signal:</strong> ${scores.vix?.signal || "—"}`;
+        $("vixEntryFlag").classList.toggle("show", inZone);
+        cardVix.classList.toggle("vix-entry", inZone);
+      } else {
+        $("vixValue").textContent = "—";
+        $("vixRating").textContent = vix.error || "Unavailable";
+        $("vixSignal").innerHTML = `<strong>Error:</strong> ${vix.error || "fetch failed"}`;
+        $("vixEntryFlag").classList.remove("show");
+        cardVix.classList.remove("vix-entry");
+      }
+
+      // Fear & Greed
+      if (fg.ok) {
+        $("fgValue").textContent = fg.value;
+        $("fgRating").textContent = fg.rating;
+        $("fgRating").className =
+          "rating " + String(fg.rating || "").toLowerCase().replace(/\s+/g, "-");
+        $("fgNeedle").style.left = Math.max(0, Math.min(100, fg.value)) + "%";
+        $("fgDeltas").textContent =
+          `Prev close ${fg.previous_close} · 1w ${fmtDelta(fg.value, fg.previous_1_week)} · 1m ${fmtDelta(fg.value, fg.previous_1_month)}`;
+        const b = ptsBadge(scores.fear_greed?.points);
+        $("fgBadge").textContent = b.text;
+        $("fgBadge").className = "badge " + b.cls;
+        $("fgSignal").innerHTML =
+          `<strong>Signal:</strong> ${scores.fear_greed?.signal || "—"}`;
+      } else {
+        $("fgValue").textContent = "—";
+        $("fgRating").textContent = fg.error || "Unavailable";
+        $("fgSignal").innerHTML = `<strong>Error:</strong> ${fg.error || "fetch failed"}`;
+      }
+
+      // AAII
+      if (aaii.ok) {
+        $("aaiiBull").textContent = aaii.bullish.toFixed(1) + "%";
+        $("aaiiNeut").textContent = aaii.neutral.toFixed(1) + "%";
+        $("aaiiBear").textContent = aaii.bearish.toFixed(1) + "%";
+        const spread = aaii.spread;
+        $("aaiiMeta").textContent =
+          `Week of ${aaii.as_of} · Bull−Bear spread ${spread >= 0 ? "+" : ""}${spread} · avg 37.5 / 31.5 / 31.0`;
+        const b = ptsBadge(scores.aaii?.points);
+        $("aaiiBadge").textContent = b.text;
+        $("aaiiBadge").className = "badge " + b.cls;
+        $("aaiiSignal").innerHTML =
+          `<strong>Signal:</strong> ${scores.aaii?.signal || "—"}`;
+      } else {
+        $("aaiiBull").textContent = "—";
+        $("aaiiNeut").textContent = "—";
+        $("aaiiBear").textContent = "—";
+        $("aaiiSignal").innerHTML = `<strong>Error:</strong> ${aaii.error || "fetch failed"}`;
+      }
+
+      // NAAIM
+      if (naaim.ok) {
+        $("naaimValue").innerHTML = naaim.value + `<span class="unit">%</span>`;
+        $("naaimPrior").textContent =
+          naaim.prior_week != null ? naaim.prior_week : "—";
+        $("naaimQ").textContent =
+          naaim.quarter_avg != null ? naaim.quarter_avg : "—";
+        $("naaimDate").textContent = naaim.as_of || "—";
+        const b = ptsBadge(scores.naaim?.points);
+        $("naaimBadge").textContent = b.text;
+        $("naaimBadge").className = "badge " + b.cls;
+        $("naaimSignal").innerHTML =
+          `<strong>Signal:</strong> ${scores.naaim?.signal || "—"}`;
+      } else {
+        $("naaimValue").innerHTML = "—";
+        $("naaimSignal").innerHTML = `<strong>Error:</strong> ${naaim.error || "fetch failed"}`;
+      }
+
+      // Timestamp
+      if (data.fetched_at) {
+        const d = new Date(data.fetched_at);
+        $("fetchedAt").textContent =
+          "Updated " + d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      }
+
+      // Errors
+      const banner = $("errorBanner");
+      if (data.errors && data.errors.length) {
+        banner.style.display = "block";
+        banner.textContent = "Partial data: " + data.errors.join(" · ");
+      } else {
+        banner.style.display = "none";
+      }
+
+      setSkeleton(false);
+    }
+
+    async function load(refresh = false) {
+      const btn = $("refreshBtn");
+      btn.disabled = true;
+      btn.textContent = "Loading…";
+      try {
+        const url = "/api/sentiment" + (refresh ? "?refresh=1" : "");
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        render(data);
+      } catch (err) {
+        $("errorBanner").style.display = "block";
+        $("errorBanner").textContent = "Failed to load data: " + err.message;
+        $("verdict").textContent = "Unable to load";
+        $("summary").textContent = "Check that the server can reach CNN, AAII, and NAAIM.";
+        setSkeleton(false);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Refresh";
+      }
+    }
+
+    $("refreshBtn").addEventListener("click", () => load(true));
+    load(false);
+  </script>
+</body>
+</html>

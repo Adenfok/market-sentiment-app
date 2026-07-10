@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.DS_Store
+*.html
+!templates/*.html
+aaii_*
+naaim_*
+mm_*
+debug_*.py
+parse_*.py
