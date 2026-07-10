@@ -9,9 +9,10 @@ Web app that pulls classic market-sentiment gauges and answers:
 | Indicator | Source | Cadence | Contrarian read |
 |-----------|--------|---------|-----------------|
 | **VIX (S&P 500)** | CBOE via Yahoo Finance | Live / daily | **VIX > 30 = entry zone** |
+| **RSP RSI(14)** | Invesco S&P 500 Equal Weight (Yahoo) | Daily | ≤30 oversold · ≥70 overbought |
 | **Fear & Greed Index** | [CNN](https://edition.cnn.com/markets/fear-and-greed) | Daily | Low (fear) → better entry |
 | **AAII Survey** | [AAII](https://www.aaii.com/sentimentsurvey) | Weekly | High bearish % → better entry |
-| **NAAIM Exposure** | [NAAIM](https://naaim.org/programs/naaim-exposure-index/) | Weekly | Low manager exposure → better entry |
+| **NAAIM Exposure** | [NAAIM](https://naaim.org/programs/naaim-exposure-index/) | Weekly | 64–&lt;98% Strong hold · 98–100% take profit |
 
 Each indicator is scored **−2 … +2**. When **VIX > 30**, the model forces at least a **Favorable to Enter** verdict.
 

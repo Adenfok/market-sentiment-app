@@ -362,6 +362,89 @@ def fetch_vix(session: requests.Session) -> dict[str, Any]:
     }
 
 
+def compute_rsi(closes: list[float], period: int = 14) -> float | None:
+    """Wilder RSI from a list of closing prices (oldest → newest)."""
+    if len(closes) < period + 1:
+        return None
+    gains: list[float] = []
+    losses: list[float] = []
+    for i in range(1, len(closes)):
+        ch = closes[i] - closes[i - 1]
+        gains.append(max(ch, 0.0))
+        losses.append(max(-ch, 0.0))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def fetch_rsp_rsi(session: requests.Session, period: int = 14) -> dict[str, Any]:
+    """
+    RSP (Invesco S&P 500 Equal Weight ETF) daily RSI(14) via Yahoo Finance.
+    Equal-weight S&P is a broader market-breadth-style pulse than cap-weighted SPY.
+    """
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/RSP?interval=1d&range=6mo"
+    r = session.get(url, timeout=20)
+    r.raise_for_status()
+    payload = r.json()
+    result = (payload.get("chart") or {}).get("result") or []
+    if not result:
+        raise ValueError("Yahoo RSP chart returned no result")
+
+    meta = result[0].get("meta") or {}
+    timestamps = result[0].get("timestamp") or []
+    closes_raw = (
+        ((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    )
+    pairs = [
+        (ts, float(cl))
+        for ts, cl in zip(timestamps, closes_raw)
+        if cl is not None
+    ]
+    if len(pairs) < period + 2:
+        raise ValueError(f"Need at least {period + 2} RSP closes for RSI")
+
+    closes = [c for _, c in pairs]
+    rsi = compute_rsi(closes, period=period)
+    if rsi is None:
+        raise ValueError("Could not compute RSP RSI")
+
+    # Prior RSI snapshots: drop last 5 and last 21 closes and recompute
+    rsi_1w = compute_rsi(closes[:-5], period=period) if len(closes) > period + 6 else None
+    rsi_1m = compute_rsi(closes[:-21], period=period) if len(closes) > period + 22 else None
+
+    price = float(meta.get("regularMarketPrice") or closes[-1])
+    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+    last_ts = pairs[-1][0]
+    as_of = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+    return {
+        "source": "RSP RSI(14)",
+        "source_url": "https://finance.yahoo.com/quote/RSP/",
+        "symbol": "RSP",
+        "name": "Invesco S&P 500 Equal Weight ETF",
+        "period": period,
+        "value": round(float(rsi), 1),
+        "price": round(price, 2),
+        "previous_close": round(float(prev_close), 2) if prev_close is not None else None,
+        "previous_1_week": round(float(rsi_1w), 1) if rsi_1w is not None else None,
+        "previous_1_month": round(float(rsi_1m), 1) if rsi_1m is not None else None,
+        "as_of": as_of,
+        "oversold": float(rsi) <= 30,
+        "overbought": float(rsi) >= 70,
+        "scale": "RSI(14): ≤30 oversold (entry favor) · ≥70 overbought (caution)",
+        "ok": True,
+        "error": None,
+    }
+
+
 def fetch_naaim(session: requests.Session) -> dict[str, Any]:
     """NAAIM Exposure Index from official NAAIM page."""
     url = "https://naaim.org/programs/naaim-exposure-index/"
@@ -452,17 +535,48 @@ def score_aaii(bullish: float, bearish: float) -> dict[str, Any]:
 
 
 def score_naaim(value: float) -> dict[str, Any]:
-    """High manager equity exposure = crowded longs = weaker contrarian entry."""
+    """
+    NAAIM average equity exposure (contrarian).
+
+    User bands:
+      40–64%  → +1
+      64–98%  →  0  (Strong hold mode)
+      98–100% → -1  (Room to take profit)
+    Extremes:
+      < 40%   → +2
+      > 100%  → -2
+    Boundaries: [40,64) +1 · [64,98) 0 · [98,100] -1
+    """
     if value < 40:
-        pts, label, signal = 2, "Very low exposure", "Managers defensive — buy opportunity"
-    elif value < 60:
-        pts, label, signal = 1, "Below-average exposure", "Room for managers to add risk"
-    elif value < 80:
-        pts, label, signal = 0, "Moderate exposure", "Neither extreme"
+        pts, label, signal = (
+            2,
+            "Very low exposure",
+            "Managers defensive — buy opportunity",
+        )
+    elif value < 64:
+        pts, label, signal = (
+            1,
+            "Below-average exposure (40–64%)",
+            "Room for managers to add risk — constructive for entries",
+        )
+    elif value < 98:
+        pts, label, signal = (
+            0,
+            "Strong hold mode (64–98%)",
+            "Strong hold mode — managers committed long; stay invested, no extreme signal",
+        )
     elif value <= 100:
-        pts, label, signal = -1, "High exposure", "Managers mostly fully invested"
+        pts, label, signal = (
+            -1,
+            "Near fully invested (98–100%)",
+            "Room to take profit — managers almost fully invested; consider trimming",
+        )
     else:
-        pts, label, signal = -2, "Leveraged / extreme long", "Crowded — elevated risk"
+        pts, label, signal = (
+            -2,
+            "Leveraged / extreme long (>100%)",
+            "Crowded leveraged long — elevated risk; prioritize taking profit / risk cut",
+        )
     return {"points": pts, "label": label, "signal": signal}
 
 
@@ -500,17 +614,64 @@ def score_vix(value: float) -> dict[str, Any]:
     }
 
 
+def score_rsp_rsi(value: float) -> dict[str, Any]:
+    """
+    RSP RSI(14) — equal-weight S&P momentum / mean-reversion gauge.
+
+    Oversold (low RSI) favors entry; overbought (high RSI) favors caution.
+    """
+    if value <= 30:
+        pts, label, signal = (
+            2,
+            "Oversold",
+            "RSP RSI ≤ 30 — oversold equal-weight S&P; strong mean-reversion entry favor",
+        )
+    elif value <= 40:
+        pts, label, signal = (
+            1,
+            "Soft oversold",
+            "RSP RSI in soft oversold zone — constructive for staged entries",
+        )
+    elif value < 60:
+        pts, label, signal = (
+            0,
+            "Neutral momentum",
+            "RSP RSI mid-range — no strong overbought/oversold edge",
+        )
+    elif value < 70:
+        pts, label, signal = (
+            -1,
+            "Elevated momentum",
+            "RSP RSI elevated — momentum strong but not extreme; watch for stretch",
+        )
+    else:
+        pts, label, signal = (
+            -2,
+            "Overbought",
+            "RSP RSI ≥ 70 — overbought equal-weight S&P; weaker entry / consider patience",
+        )
+    return {
+        "points": pts,
+        "label": label,
+        "signal": signal,
+        "oversold": value <= 30,
+        "overbought": value >= 70,
+    }
+
+
 def build_conclusion(
     fg: dict[str, Any],
     aaii: dict[str, Any],
     naaim: dict[str, Any],
     vix: dict[str, Any],
+    rsp_rsi: dict[str, Any],
 ) -> dict[str, Any]:
     scores = {
         "fear_greed": score_fear_greed(fg["value"]) if fg.get("ok") else None,
         "aaii": score_aaii(aaii["bullish"], aaii["bearish"]) if aaii.get("ok") else None,
         "naaim": score_naaim(naaim["value"]) if naaim.get("ok") else None,
         "vix": score_vix(vix["value"]) if vix.get("ok") else None,
+        "rsp_rsi": score_rsp_rsi(rsp_rsi["value"]) if rsp_rsi.get("ok") else None,
     }
 
     available = [s for s in scores.values() if s is not None]
@@ -531,7 +692,8 @@ def build_conclusion(
     max_pts = 2 * len(available)
     vix_entry = bool(vix.get("ok") and vix.get("value", 0) > 30)
 
-    if total >= 5:
+    # 5 gauges max ±10; keep Strong Buy as a clear multi-signal threshold
+    if total >= 6:
         verdict, vclass = "Strong Buy Zone", "strong-buy"
         summary = (
             "Sentiment is broadly pessimistic or under-invested. Historically this is a "
@@ -578,6 +740,11 @@ def build_conclusion(
         details.append(
             f"VIX at {vix['value']} — {zone}: {scores['vix']['signal']}."
         )
+    if scores["rsp_rsi"]:
+        details.append(
+            f"RSP RSI(14) at {rsp_rsi['value']} ({scores['rsp_rsi']['label']}): "
+            f"{scores['rsp_rsi']['signal']}."
+        )
     if scores["fear_greed"]:
         details.append(
             f"Fear & Greed at {fg['value']} ({scores['fear_greed']['label']}): "
@@ -593,6 +760,19 @@ def build_conclusion(
             f"NAAIM exposure {naaim['value']}%: {scores['naaim']['signal']}."
         )
 
+    def _score_payload(v: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not v:
+            return None
+        out = {
+            "points": v["points"],
+            "label": v["label"],
+            "signal": v["signal"],
+        }
+        for key in ("entry_zone", "oversold", "overbought"):
+            if key in v:
+                out[key] = v[key]
+        return out
+
     return {
         "total_points": total,
         "max_points": max_pts,
@@ -603,19 +783,7 @@ def build_conclusion(
         "details": details,
         "disclaimer": DISCLAIMER,
         "vix_entry_zone": vix_entry,
-        "scores": {
-            k: (
-                {
-                    "points": v["points"],
-                    "label": v["label"],
-                    "signal": v["signal"],
-                    **({"entry_zone": v["entry_zone"]} if "entry_zone" in v else {}),
-                }
-                if v
-                else None
-            )
-            for k, v in scores.items()
-        },
+        "scores": {k: _score_payload(v) for k, v in scores.items()},
     }
 
 
@@ -658,13 +826,20 @@ def collect_all(force: bool = False) -> dict[str, Any]:
         vix = {"ok": False, "error": str(exc), "source": "CBOE VIX (S&P 500)"}
         errors.append(f"VIX: {exc}")
 
-    conclusion = build_conclusion(fg, aaii, naaim, vix)
+    try:
+        rsp_rsi = fetch_rsp_rsi(session)
+    except Exception as exc:  # noqa: BLE001
+        rsp_rsi = {"ok": False, "error": str(exc), "source": "RSP RSI(14)"}
+        errors.append(f"RSP RSI: {exc}")
+
+    conclusion = build_conclusion(fg, aaii, naaim, vix, rsp_rsi)
     payload = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "fear_greed": fg,
         "aaii": aaii,
         "naaim": naaim,
         "vix": vix,
+        "rsp_rsi": rsp_rsi,
         "conclusion": conclusion,
         "errors": errors,
     }
