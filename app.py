@@ -7,9 +7,11 @@ then scores whether sentiment favors entering the US equity market (contrarian l
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -27,9 +29,17 @@ BROWSER_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Cache live pulls briefly so refresh storms don't hammer sources
+# Short cache for daily/live gauges (VIX, F&G, RSP)
 _CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 CACHE_TTL_SEC = 300
+
+# Weekly gauges — disk cache; Refresh does not re-hit these sources
+# 6 days covers one survey cycle until the next weekly print
+WEEKLY_CACHE_TTL_SEC = 6 * 24 * 3600
+AAII_CACHE_TTL_SEC = WEEKLY_CACHE_TTL_SEC  # alias
+DATA_DIR = Path(__file__).resolve().parent / "data"
+AAII_CACHE_PATH = DATA_DIR / "aaii_cache.json"
+NAAIM_CACHE_PATH = DATA_DIR / "naaim_cache.json"
 
 # Long-term AAII averages (published by AAII)
 AAII_AVG = {"bullish": 37.5, "neutral": 31.5, "bearish": 31.0}
@@ -112,7 +122,79 @@ def _aaii_from_rows(
         "history": rows[:8],
         "ok": True,
         "error": None,
+        "cached": False,
+        "stale": False,
+        "cache_age_hours": 0.0,
     }
+
+
+def _load_weekly_disk_cache(path: Path) -> tuple[dict[str, Any] | None, float | None]:
+    """Return (payload, saved_unix_ts) or (None, None)."""
+    try:
+        if not path.exists():
+            return None, None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        saved = float(raw.get("saved_at", 0))
+        data = raw.get("data")
+        if not isinstance(data, dict) or not data.get("ok"):
+            return None, None
+        return data, saved
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _save_weekly_disk_cache(path: Path, data: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Don't persist transient flags
+        skip = ("cached", "stale", "cache_age_hours", "cached_at", "cache_note")
+        to_store = {k: v for k, v in data.items() if k not in skip}
+        payload = {
+            "saved_at": time.time(),
+            "saved_at_iso": datetime.now(timezone.utc).isoformat(),
+            "data": to_store,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _annotate_weekly_cache(
+    data: dict[str, Any],
+    *,
+    cached: bool,
+    saved_ts: float | None,
+    stale: bool = False,
+) -> dict[str, Any]:
+    out = dict(data)
+    out["cached"] = cached
+    out["stale"] = stale
+    if saved_ts:
+        out["cache_age_hours"] = round((time.time() - saved_ts) / 3600, 1)
+        out["cached_at"] = datetime.fromtimestamp(saved_ts, tz=timezone.utc).isoformat()
+    else:
+        out["cache_age_hours"] = 0.0
+    return out
+
+
+def _load_aaii_disk_cache() -> tuple[dict[str, Any] | None, float | None]:
+    return _load_weekly_disk_cache(AAII_CACHE_PATH)
+
+
+def _save_aaii_disk_cache(data: dict[str, Any]) -> None:
+    _save_weekly_disk_cache(AAII_CACHE_PATH, data)
+
+
+def _annotate_aaii_cache(
+    data: dict[str, Any],
+    *,
+    cached: bool,
+    saved_ts: float | None,
+    stale: bool = False,
+) -> dict[str, Any]:
+    return _annotate_weekly_cache(
+        data, cached=cached, saved_ts=saved_ts, stale=stale
+    )
 
 
 def _fetch_aaii_official(session: requests.Session) -> dict[str, Any]:
@@ -283,24 +365,57 @@ def _fetch_aaii_macromicro_series_pages(session: requests.Session) -> dict[str, 
     )
 
 
-def fetch_aaii(session: requests.Session) -> dict[str, Any]:
+def _fetch_aaii_network(session: requests.Session) -> dict[str, Any]:
     """
-    AAII Investor Sentiment Survey (weekly).
+    Live AAII pull.
 
-    Tries official AAII first; falls back to MacroMicro mirrors when AAII
-    returns a bot challenge or unparsable HTML.
+    Prefer MacroMicro (less bot-blocking) over aaii.com. Official AAII last.
     """
     errors: list[str] = []
     for fetcher in (
-        _fetch_aaii_official,
         _fetch_aaii_macromicro,
         _fetch_aaii_macromicro_series_pages,
+        _fetch_aaii_official,
     ):
         try:
             return fetcher(session)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{fetcher.__name__}: {exc}")
     raise ValueError("All AAII sources failed → " + " | ".join(errors))
+
+
+def get_aaii(session: requests.Session, *, force: bool = False) -> dict[str, Any]:
+    """
+    Weekly AAII with long-lived disk cache.
+
+    - Normal / Refresh: reuse cache if younger than AAII_CACHE_TTL_SEC (6 days).
+    - force=True (refresh_aaii=1): try network; on failure keep last good cache.
+    - Never fail hard if a previous successful reading exists on disk.
+    """
+    cached, saved_ts = _load_aaii_disk_cache()
+    age = (time.time() - saved_ts) if saved_ts else None
+    fresh_enough = age is not None and age < AAII_CACHE_TTL_SEC
+
+    if cached and fresh_enough and not force:
+        return _annotate_aaii_cache(cached, cached=True, saved_ts=saved_ts, stale=False)
+
+    try:
+        live = _fetch_aaii_network(session)
+        _save_aaii_disk_cache(live)
+        return _annotate_aaii_cache(live, cached=False, saved_ts=time.time(), stale=False)
+    except Exception as exc:  # noqa: BLE001
+        if cached:
+            # Prefer last week's good reading over empty UI / error banner noise
+            out = _annotate_aaii_cache(
+                cached,
+                cached=True,
+                saved_ts=saved_ts,
+                stale=True,
+            )
+            out["error"] = None
+            out["cache_note"] = f"Using saved weekly AAII (live fetch failed: {exc})"
+            return out
+        raise
 
 
 def fetch_vix(session: requests.Session) -> dict[str, Any]:
@@ -344,7 +459,7 @@ def fetch_vix(session: requests.Session) -> dict[str, Any]:
                 prev_1m = round(float(cl), 2)
                 break
 
-    entry_zone = value > 30
+    entry_zone = value > 30  # hard override: at least Favorable to Enter
 
     return {
         "source": "CBOE VIX (S&P 500)",
@@ -354,9 +469,9 @@ def fetch_vix(session: requests.Session) -> dict[str, Any]:
         "previous_close": prev_close,
         "previous_1_week": prev_1w,
         "previous_1_month": prev_1m,
-        "entry_zone": entry_zone,  # True when VIX > 30
+        "entry_zone": entry_zone,
         "threshold": 30,
-        "scale": "Higher VIX = more fear/volatility · VIX > 30 = entry zone",
+        "scale": "VIX >30 = Favorable override · >40 = +3 pts · 20–23 = +1 · 23–30 = 0",
         "ok": True,
         "error": None,
     }
@@ -445,8 +560,8 @@ def fetch_rsp_rsi(session: requests.Session, period: int = 14) -> dict[str, Any]
     }
 
 
-def fetch_naaim(session: requests.Session) -> dict[str, Any]:
-    """NAAIM Exposure Index from official NAAIM page."""
+def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
+    """Live NAAIM Exposure Index from official NAAIM page."""
     url = "https://naaim.org/programs/naaim-exposure-index/"
     r = session.get(url, timeout=20)
     r.raise_for_status()
@@ -494,7 +609,42 @@ def fetch_naaim(session: requests.Session) -> dict[str, Any]:
         "scale": "-200 leveraged short · 0 cash · 100 fully invested · 200 leveraged long",
         "ok": True,
         "error": None,
+        "cached": False,
+        "stale": False,
+        "cache_age_hours": 0.0,
     }
+
+
+def get_naaim(session: requests.Session, *, force: bool = False) -> dict[str, Any]:
+    """
+    Weekly NAAIM with long-lived disk cache.
+
+    Same policy as AAII: Refresh does not re-hit NAAIM; use refresh_naaim=1 or
+    refresh_weekly=1 to force a live pull.
+    """
+    cached, saved_ts = _load_weekly_disk_cache(NAAIM_CACHE_PATH)
+    age = (time.time() - saved_ts) if saved_ts else None
+    fresh_enough = age is not None and age < WEEKLY_CACHE_TTL_SEC
+
+    if cached and fresh_enough and not force:
+        return _annotate_weekly_cache(cached, cached=True, saved_ts=saved_ts, stale=False)
+
+    try:
+        live = _fetch_naaim_network(session)
+        _save_weekly_disk_cache(NAAIM_CACHE_PATH, live)
+        return _annotate_weekly_cache(live, cached=False, saved_ts=time.time(), stale=False)
+    except Exception as exc:  # noqa: BLE001
+        if cached:
+            out = _annotate_weekly_cache(
+                cached,
+                cached=True,
+                saved_ts=saved_ts,
+                stale=True,
+            )
+            out["error"] = None
+            out["cache_note"] = f"Using saved weekly NAAIM (live fetch failed: {exc})"
+            return out
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -502,159 +652,247 @@ def fetch_naaim(session: requests.Session) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def score_fear_greed(value: float) -> dict[str, Any]:
-    """Lower fear → better contrarian entry. Score -2 … +2."""
-    if value <= 25:
-        pts, label, signal = 2, "Extreme Fear", "Strong buy zone (contrarian)"
-    elif value <= 45:
-        pts, label, signal = 1, "Fear", "Favorable for gradual entries"
+    """
+    CNN Fear & Greed — hybrid:
+      ≤10  → +3 (capitulation)
+      10–25 → +2 (extreme fear, contrarian)
+      25–45 → −1 (fear = risk-off regime)
+      45–55 →  0
+      55–75 → +1 (greed = risk-on)
+      ≥75   → +1 (extreme greed still risk-on)
+    """
+    if value <= 10:
+        pts, label, signal = (
+            3.0,
+            "Capitulation fear (≤10)",
+            "Deep capitulation — strongest F&G entry score",
+        )
+    elif value <= 25:
+        pts, label, signal = (
+            2.0,
+            "Extreme Fear",
+            "Extreme fear band — contrarian entry favor",
+        )
+    elif value < 45:
+        pts, label, signal = (
+            -1.0,
+            "Fear (risk-off)",
+            "Risk-off tape — fear often persists; not a buy-the-dip score alone",
+        )
     elif value < 55:
-        pts, label, signal = 0, "Neutral", "Sentiment not extreme either way"
+        pts, label, signal = (
+            0.0,
+            "Neutral",
+            "Sentiment not extreme either way",
+        )
     elif value < 75:
-        pts, label, signal = -1, "Greed", "Caution — optimism elevated"
+        pts, label, signal = (
+            1.0,
+            "Greed (risk-on)",
+            "Risk-on regime — momentum/participation constructive",
+        )
     else:
-        pts, label, signal = -2, "Extreme Greed", "Poor contrarian entry zone"
+        pts, label, signal = (
+            -2.0,
+            "Extreme Greed (overhype)",
+            "Overhype / extreme greed — poor entry; elevated risk of pullback",
+        )
     return {"points": pts, "label": label, "signal": signal}
 
 
 def score_aaii(bullish: float, bearish: float) -> dict[str, Any]:
-    """Elevated retail bearishness historically aligns with better forward returns."""
+    """
+    AAII survey — same bands as before, but half weight
+    (+2→+1, +1→+0.5, −1→−0.5, −2→−1).
+    """
     spread = bullish - bearish
     if bearish >= 50 or spread <= -20:
-        pts, label, signal = 2, "Extreme retail pessimism", "Strong contrarian buy signal"
+        raw, label, signal = 2, "Extreme retail pessimism", "Contrarian buy (half weight)"
     elif bearish >= 40 or spread <= -8:
-        pts, label, signal = 1, "Retail lean bearish", "Favorable for entries"
+        raw, label, signal = 1, "Retail lean bearish", "Mild contrarian favor (half weight)"
     elif abs(spread) < 8 and 28 <= bullish <= 42:
-        pts, label, signal = 0, "Balanced / near average", "No strong edge from survey"
+        raw, label, signal = 0, "Balanced / near average", "No strong edge from survey"
     elif bullish >= 50 or spread >= 20:
-        pts, label, signal = -2, "Extreme retail optimism", "Poor contrarian entry zone"
+        raw, label, signal = -2, "Extreme retail optimism", "Crowd optimistic (half weight)"
     elif bullish >= 42 or spread >= 8:
-        pts, label, signal = -1, "Retail lean bullish", "Caution — crowd optimistic"
+        raw, label, signal = -1, "Retail lean bullish", "Mild caution (half weight)"
     else:
-        pts, label, signal = 0, "Mildly mixed", "Neutral reading"
-    return {"points": pts, "label": label, "signal": signal, "spread": round(spread, 1)}
+        raw, label, signal = 0, "Mildly mixed", "Neutral reading"
+    return {
+        "points": raw * 0.5,
+        "label": label,
+        "signal": signal,
+        "spread": round(spread, 1),
+        "raw_points": raw,
+    }
 
 
 def score_naaim(value: float) -> dict[str, Any]:
     """
-    NAAIM average equity exposure (contrarian).
+    NAAIM exposure — same bands as before, half weight
+    (+2→+1, +1→+0.5, −1→−0.5, −2→−1).
 
-    User bands:
-      40–64%  → +1
-      64–98%  →  0  (Strong hold mode)
-      98–100% → -1  (Room to take profit)
-    Extremes:
-      < 40%   → +2
-      > 100%  → -2
-    Boundaries: [40,64) +1 · [64,98) 0 · [98,100] -1
+      <40%     → raw +2 → +1.0
+      40–64%   → raw +1 → +0.5
+      64–98%   → 0 Strong hold
+      98–100%  → raw −1 → −0.5 take profit
+      >100%    → raw −2 → −1.0
     """
     if value < 40:
-        pts, label, signal = (
+        raw, label, signal = (
             2,
             "Very low exposure",
-            "Managers defensive — buy opportunity",
+            "Managers defensive — buy opportunity (half weight)",
         )
     elif value < 64:
-        pts, label, signal = (
+        raw, label, signal = (
             1,
             "Below-average exposure (40–64%)",
-            "Room for managers to add risk — constructive for entries",
+            "Room to add risk (half weight)",
         )
     elif value < 98:
-        pts, label, signal = (
+        raw, label, signal = (
             0,
             "Strong hold mode (64–98%)",
-            "Strong hold mode — managers committed long; stay invested, no extreme signal",
+            "Strong hold mode — managers committed long; stay invested",
         )
     elif value <= 100:
-        pts, label, signal = (
+        raw, label, signal = (
             -1,
             "Near fully invested (98–100%)",
-            "Room to take profit — managers almost fully invested; consider trimming",
+            "Room to take profit (half weight)",
         )
     else:
-        pts, label, signal = (
+        raw, label, signal = (
             -2,
             "Leveraged / extreme long (>100%)",
-            "Crowded leveraged long — elevated risk; prioritize taking profit / risk cut",
+            "Crowded long — elevated risk (half weight)",
         )
-    return {"points": pts, "label": label, "signal": signal}
+    return {
+        "points": raw * 0.5,
+        "label": label,
+        "signal": signal,
+        "raw_points": raw,
+    }
 
 
 def score_vix(value: float) -> dict[str, Any]:
     """
-    CBOE VIX — elevated vol = fear = better contrarian entry.
+    CBOE VIX scoring (user rules):
+      >40      → +3  panic / strong entry
+      (30, 40] → +2  elevated stress
+      (23, 30] →  0  choppy / hard range (user: ~22–30)
+      [20, 23] → +1  healthy correction often finishing
+      [15, 20) →  0  normal
+      [12, 15) → −1  complacency
+      <12      → −2  extreme complacency
 
-    Rule: VIX > 30 is an entry zone (+2).
+    Hard override (verdict floor): VIX > 30 → at least Favorable (entry_zone flag).
+    Points for VIX > 40 remain +3 (panic).
     """
     if value > 40:
         pts, label, signal = (
-            2,
+            3.0,
             "Panic / extreme vol",
-            "Strong entry zone — VIX well above 30",
+            "Strong entry zone — VIX > 40 (+3)",
         )
     elif value > 30:
         pts, label, signal = (
-            2,
-            "Elevated fear (entry zone)",
-            "Entry point — VIX > 30 signals market stress",
+            2.0,
+            "Elevated stress (30–40)",
+            "High vol stress — hard override: at least Favorable to Enter",
         )
-    elif value >= 25:
-        pts, label, signal = 1, "Elevated vol", "Approaching stress — watch for VIX > 30"
+    elif value > 23:
+        # covers ~22–30 choppy zone (22–23 handled as healthy-correction +1 below)
+        pts, label, signal = (
+            0.0,
+            "Choppy / hard range (23–30)",
+            "Volatile range — often grindy; no edge from VIX alone",
+        )
+    elif value >= 20:
+        pts, label, signal = (
+            1.0,
+            "Healthy correction vol (20–23)",
+            "Typical healthy pullback vol — correction often late-stage",
+        )
     elif value >= 15:
-        pts, label, signal = 0, "Normal vol regime", "No fear spike — neutral for entry timing"
+        pts, label, signal = (
+            0.0,
+            "Normal vol (15–20)",
+            "Normal regime — neutral for entry timing",
+        )
     elif value >= 12:
-        pts, label, signal = -1, "Low vol / complacency", "Calm markets — weaker contrarian entry"
+        pts, label, signal = (
+            -1.0,
+            "Low vol / complacency",
+            "Calm markets — weaker fear-based entry",
+        )
     else:
-        pts, label, signal = -2, "Extreme complacency", "Very low VIX — poor fear-based entry"
+        pts, label, signal = (
+            -2.0,
+            "Extreme complacency",
+            "Very low VIX — poor fear-based entry",
+        )
     return {
         "points": pts,
         "label": label,
         "signal": signal,
+        # Hard override for conclusion floor (Favorable+)
         "entry_zone": value > 30,
     }
 
 
 def score_rsp_rsi(value: float) -> dict[str, Any]:
     """
-    RSP RSI(14) — equal-weight S&P momentum / mean-reversion gauge.
-
-    Oversold (low RSI) favors entry; overbought (high RSI) favors caution.
+    RSP RSI(14):
+      ≤30     → +3 (rare deep oversold)
+      30–33   → +2
+      33–40   → +1
+      40–60   →  0
+      60–70   → −1
+      ≥70     → −2
     """
     if value <= 30:
         pts, label, signal = (
-            2,
-            "Oversold",
-            "RSP RSI ≤ 30 — oversold equal-weight S&P; strong mean-reversion entry favor",
+            3.0,
+            "Deep oversold (≤30)",
+            "Rare deep oversold — strongest RSI mean-reversion score",
+        )
+    elif value <= 33:
+        pts, label, signal = (
+            2.0,
+            "Oversold (30–33)",
+            "Oversold equal-weight S&P — strong entry favor",
         )
     elif value <= 40:
         pts, label, signal = (
-            1,
-            "Soft oversold",
-            "RSP RSI in soft oversold zone — constructive for staged entries",
+            1.0,
+            "Soft oversold (33–40)",
+            "Soft oversold — constructive for staged entries",
         )
     elif value < 60:
         pts, label, signal = (
-            0,
+            0.0,
             "Neutral momentum",
             "RSP RSI mid-range — no strong overbought/oversold edge",
         )
     elif value < 70:
         pts, label, signal = (
-            -1,
+            -1.0,
             "Elevated momentum",
-            "RSP RSI elevated — momentum strong but not extreme; watch for stretch",
+            "RSP RSI elevated — momentum strong; watch for stretch",
         )
     else:
         pts, label, signal = (
-            -2,
+            -2.0,
             "Overbought",
-            "RSP RSI ≥ 70 — overbought equal-weight S&P; weaker entry / consider patience",
+            "RSP RSI ≥ 70 — overbought; weaker mean-reversion entry",
         )
     return {
         "points": pts,
         "label": label,
         "signal": signal,
-        "oversold": value <= 30,
+        "oversold": value <= 33,
         "overbought": value >= 70,
     }
 
@@ -690,9 +928,22 @@ def build_conclusion(
 
     total = sum(s["points"] for s in available)
     max_pts = 2 * len(available)
+    # Hard override uses VIX > 30 (not only the +3 panic band at >40)
     vix_entry = bool(vix.get("ok") and vix.get("value", 0) > 30)
 
-    # 5 gauges max ±10; keep Strong Buy as a clear multi-signal threshold
+    # Verdict from total score (points can be half-integers with AAII/NAAIM ×0.5)
+    #   Strong Buy Zone              total ≥ +6
+    #   Favorable to Enter           total ≥ +2  AND confirmed (VIX pts≥2 OR RSI pts≥2)
+    #   Neutral — Selective Entry    total ≥  0  (or total≥2 but unconfirmed)
+    #   Caution — Wait               total ≥ −3
+    #   Poor Entry Zone (avoid)      total < −3
+    #
+    # Confirmed Favorable (backtest 2021–2026-06): hit ~76% / mean ~+3.3% 21d
+    # vs bare Favorable ~65% / +1.4%.
+    vix_pts = float(scores["vix"]["points"]) if scores["vix"] else 0.0
+    rsi_pts = float(scores["rsp_rsi"]["points"]) if scores["rsp_rsi"] else 0.0
+    favorable_confirmed = (vix_pts >= 2.0) or (rsi_pts >= 2.0)
+
     if total >= 6:
         verdict, vclass = "Strong Buy Zone", "strong-buy"
         summary = (
@@ -700,11 +951,20 @@ def build_conclusion(
             "better environment for adding US equity exposure (contrarian)."
         )
     elif total >= 2:
-        verdict, vclass = "Favorable to Enter", "buy"
-        summary = (
-            "Overall sentiment leans cautious. Conditions support staged or gradual "
-            "entries into US equities rather than waiting for perfect calm."
-        )
+        if favorable_confirmed:
+            verdict, vclass = "Favorable to Enter", "buy"
+            summary = (
+                "Score is constructive and confirmed by elevated VIX and/or soft/deep "
+                "RSP RSI oversold. Conditions support staged entries into US equities."
+            )
+        else:
+            # Soft +2…+6 without vol/RSI confirm → Neutral (not true Favorable)
+            verdict, vclass = "Neutral — Selective Entry", "neutral"
+            summary = (
+                f"Raw score is +{total:g} but Favorable requires confirmation "
+                f"(VIX pts ≥ 2 or RSI pts ≥ 2). Currently VIX={vix_pts:g}, RSI={rsi_pts:g}. "
+                "Treat as selective / wait for vol or RSI stress."
+            )
     elif total >= 0:
         verdict, vclass = "Neutral — Selective Entry", "neutral"
         summary = (
@@ -724,19 +984,26 @@ def build_conclusion(
             "suggests waiting for a fear spike or pullback before new risk."
         )
 
-    # Hard rule: VIX > 30 is treated as an entry point
+    # Hard rule: VIX > 30 floors the verdict at Favorable (implies VIX pts ≥ 2 → confirmed)
     if vix_entry:
         if vclass in ("caution", "avoid", "neutral"):
             verdict, vclass = "Favorable to Enter", "buy"
-        summary = (
-            f"VIX is {vix['value']} (> 30 entry threshold) — market stress / fear is elevated, "
-            "which this model treats as an entry zone. "
-            + summary
-        )
+            summary = (
+                f"VIX is {vix['value']} (> 30) — hard override to Favorable to Enter "
+                "(vol confirmation met). "
+            ) + summary
+        elif vclass == "buy":
+            summary = (
+                f"VIX is {vix['value']} (> 30) — vol confirmation for Favorable. "
+            ) + summary
 
     details = []
     if scores["vix"]:
-        zone = "ENTRY ZONE (VIX > 30)" if vix_entry else "below entry threshold (≤ 30)"
+        zone = (
+            "HARD OVERRIDE (VIX > 30 → ≥ Favorable)"
+            if vix_entry
+            else "no VIX override (VIX ≤ 30)"
+        )
         details.append(
             f"VIX at {vix['value']} — {zone}: {scores['vix']['signal']}."
         )
@@ -783,6 +1050,7 @@ def build_conclusion(
         "details": details,
         "disclaimer": DISCLAIMER,
         "vix_entry_zone": vix_entry,
+        "favorable_confirmed": favorable_confirmed,
         "scores": {k: _score_payload(v) for k, v in scores.items()},
     }
 
@@ -794,9 +1062,23 @@ DISCLAIMER = (
 )
 
 
-def collect_all(force: bool = False) -> dict[str, Any]:
+def collect_all(
+    force: bool = False,
+    force_aaii: bool = False,
+    force_naaim: bool = False,
+) -> dict[str, Any]:
+    """
+    force: re-fetch daily/live gauges (ignores 5‑min cache).
+    force_aaii / force_naaim: re-fetch weekly gauges (normally skipped for 6 days).
+    """
     now = time.time()
-    if not force and _CACHE["data"] and (now - _CACHE["ts"]) < CACHE_TTL_SEC:
+    weekly_force = force_aaii or force_naaim
+    if (
+        not force
+        and not weekly_force
+        and _CACHE["data"]
+        and (now - _CACHE["ts"]) < CACHE_TTL_SEC
+    ):
         return _CACHE["data"]
 
     session = _session()
@@ -808,16 +1090,29 @@ def collect_all(force: bool = False) -> dict[str, Any]:
         fg = {"ok": False, "error": str(exc), "source": "CNN Fear & Greed Index"}
         errors.append(f"Fear & Greed: {exc}")
 
+    # Weekly surveys — disk-cached; normal Refresh does not re-hit these
     try:
-        aaii = fetch_aaii(session)
+        aaii = get_aaii(session, force=force_aaii)
     except Exception as exc:  # noqa: BLE001
-        aaii = {"ok": False, "error": str(exc), "source": "AAII Investor Sentiment Survey"}
+        aaii = {
+            "ok": False,
+            "error": str(exc),
+            "source": "AAII Investor Sentiment Survey",
+            "cached": False,
+            "stale": False,
+        }
         errors.append(f"AAII: {exc}")
 
     try:
-        naaim = fetch_naaim(session)
+        naaim = get_naaim(session, force=force_naaim)
     except Exception as exc:  # noqa: BLE001
-        naaim = {"ok": False, "error": str(exc), "source": "NAAIM Exposure Index"}
+        naaim = {
+            "ok": False,
+            "error": str(exc),
+            "source": "NAAIM Exposure Index",
+            "cached": False,
+            "stale": False,
+        }
         errors.append(f"NAAIM: {exc}")
 
     try:
@@ -842,6 +1137,12 @@ def collect_all(force: bool = False) -> dict[str, Any]:
         "rsp_rsi": rsp_rsi,
         "conclusion": conclusion,
         "errors": errors,
+        "cache_policy": {
+            "live_ttl_sec": CACHE_TTL_SEC,
+            "weekly_ttl_sec": WEEKLY_CACHE_TTL_SEC,
+            "aaii_from_cache": bool(aaii.get("cached")),
+            "naaim_from_cache": bool(naaim.get("cached")),
+        },
     }
     _CACHE["ts"] = now
     _CACHE["data"] = payload
@@ -859,11 +1160,20 @@ def index():
 
 @app.route("/api/sentiment")
 def api_sentiment():
-    force = False
     from flask import request
 
+    # refresh=1 → re-pull daily gauges only (VIX / F&G / RSP)
+    # refresh_aaii=1 / refresh_naaim=1 → force that weekly series
+    # refresh_weekly=1 → force both AAII + NAAIM
     force = request.args.get("refresh") == "1"
-    data = collect_all(force=force)
+    force_weekly = request.args.get("refresh_weekly") == "1"
+    force_aaii = force_weekly or request.args.get("refresh_aaii") == "1"
+    force_naaim = force_weekly or request.args.get("refresh_naaim") == "1"
+    data = collect_all(
+        force=force or force_aaii or force_naaim,
+        force_aaii=force_aaii,
+        force_naaim=force_naaim,
+    )
     return jsonify(data)
 
 

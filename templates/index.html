@@ -585,7 +585,7 @@
         <h1>Is it time to enter US equities?</h1>
         <p class="subtitle">
           Live read on VIX, RSP RSI(14), Fear &amp; Greed, AAII, and NAAIM —
-          scored for US equity entry timing. <strong style="color:var(--green)">VIX &gt; 30 = entry zone</strong>.
+          scored for US equity entry timing. <strong style="color:var(--green)">VIX &gt; 30 → ≥ Favorable</strong> · VIX &gt; 40 = +3 pts.
         </p>
       </div>
       <div class="actions">
@@ -634,12 +634,12 @@
         </div>
         <div>
           <div class="vix-bar">
-            <div class="vix-mark" title="Entry threshold = 30"></div>
+            <div class="vix-mark" title="Panic threshold = 40" style="left:66.67%"></div>
             <div class="vix-needle" id="vixNeedle" style="left:25%"></div>
           </div>
-          <div class="vix-scale"><span>Calm</span><span>30 entry</span><span>Panic</span></div>
+          <div class="vix-scale"><span>Calm</span><span>20–23 +1</span><span>40 +3</span></div>
         </div>
-        <div class="deltas" id="vixDeltas">Threshold: VIX &gt; 30 = entry point</div>
+        <div class="deltas" id="vixDeltas">VIX &gt;40 = +3 · 20–23 = +1 · 23–30 = 0 choppy</div>
         <div class="entry-flag" id="vixEntryFlag">Entry zone active</div>
         <div class="signal" id="vixSignal"><strong>Signal:</strong> —</div>
       </article>
@@ -696,7 +696,7 @@
         <div class="card-head">
           <div>
             <h2>AAII Survey</h2>
-            <div class="src"><a href="https://www.aaii.com/sentimentsurvey" target="_blank" rel="noopener">AAII</a> · weekly</div>
+            <div class="src"><a href="https://www.aaii.com/sentimentsurvey" target="_blank" rel="noopener">AAII</a> · weekly · <span id="aaiiCacheTag">cached</span></div>
           </div>
           <span class="badge" id="aaiiBadge">—</span>
         </div>
@@ -723,7 +723,7 @@
         <div class="card-head">
           <div>
             <h2>NAAIM Exposure</h2>
-            <div class="src"><a href="https://naaim.org/programs/naaim-exposure-index/" target="_blank" rel="noopener">NAAIM</a> · weekly</div>
+            <div class="src"><a href="https://naaim.org/programs/naaim-exposure-index/" target="_blank" rel="noopener">NAAIM</a> · weekly · <span id="naaimCacheTag">cached</span></div>
           </div>
           <span class="badge" id="naaimBadge">—</span>
         </div>
@@ -757,11 +757,12 @@
         <em>contrarian</em> framework: fear / stress favors entry; greed / complacency does not.
       </p>
       <ul>
-        <li><strong style="color:var(--text)">VIX</strong> — <strong style="color:var(--green)">VIX &gt; 30 is an entry point</strong> (+2). Low VIX (complacency) scores negative.</li>
-        <li><strong style="color:var(--text)">RSP RSI(14)</strong> — equal-weight S&amp;P: ≤30 oversold +2 · ≤40 +1 · 40–60 0 · 60–70 −1 · ≥70 overbought −2.</li>
-        <li><strong style="color:var(--text)">Fear &amp; Greed</strong> — lower readings favor entry; extreme greed scores negative.</li>
-        <li><strong style="color:var(--text)">AAII</strong> — high bearish % (or deeply negative bull−bear spread) is a buy signal.</li>
-        <li><strong style="color:var(--text)">NAAIM</strong> — 40–64% = +1 (add risk) · <em>64–&lt;98% = 0 Strong hold mode</em> · <em>98–100% = −1 room to take profit</em> · &lt;40% = +2 · &gt;100% = −2.</li>
+        <li><strong style="color:var(--text)">VIX</strong> — &gt;40 = <strong style="color:var(--green)">+3</strong> · 30–40 = +2 · 23–30 = 0 (choppy) · 20–23 = +1 · 15–20 = 0. <strong>Hard override: VIX &gt; 30 → at least Favorable to Enter.</strong></li>
+        <li><strong style="color:var(--text)">Verdict totals</strong> — Strong Buy ≥ <strong>+6</strong> · Favorable ≥ <strong>+2</strong> <em>and</em> confirmed (VIX pts ≥ 2 <strong>or</strong> RSI pts ≥ 2) · Neutral ≥ <strong>0</strong> (or +2…+6 unconfirmed) · Caution ≥ <strong>−3</strong> · Avoid &lt; <strong>−3</strong>.</li>
+        <li><strong style="color:var(--text)">RSP RSI(14)</strong> — ≤30 = <strong style="color:var(--green)">+3</strong> · 30–33 = +2 · 33–40 = +1 · 40–60 = 0 · 60–70 = −1 · ≥70 = −2.</li>
+        <li><strong style="color:var(--text)">Fear &amp; Greed</strong> — ≤10 = +3 · 10–25 = +2 · 25–45 fear = −1 (risk-off) · 55–75 greed = +1 (risk-on) · ≥75 = −2 (overhype).</li>
+        <li><strong style="color:var(--text)">AAII</strong> — half weight (raw ±2 → ±1, ±1 → ±0.5). Weekly cache ~6 days.</li>
+        <li><strong style="color:var(--text)">NAAIM</strong> — half weight; 64–&lt;98% Strong hold (0); 98–100% take profit (−0.5). Weekly cache ~6 days.</li>
       </ul>
       <p class="disclaimer" id="disclaimer">
         Educational / research tool only — not investment advice. Sentiment indicators are noisy
@@ -770,7 +771,7 @@
     </section>
 
     <footer>
-      Data from VIX, RSP, CNN, AAII, NAAIM · Cached 5 minutes
+      Daily: VIX / RSP / F&amp;G (5 min) · Weekly: AAII / NAAIM (~6 days cache)
     </footer>
   </div>
 
@@ -779,8 +780,10 @@
 
     function ptsBadge(points) {
       if (points == null) return { text: "n/a", cls: "" };
-      if (points >= 1) return { text: `+${points} entry favor`, cls: "pos" };
-      if (points <= -1) return { text: `${points} caution`, cls: "neg" };
+      const p = Number(points);
+      const txt = (p > 0 ? "+" : "") + (Number.isInteger(p) ? String(p) : p.toFixed(1));
+      if (p > 0) return { text: `${txt} entry favor`, cls: "pos" };
+      if (p < 0) return { text: `${txt} caution`, cls: "neg" };
       return { text: "0 neutral", cls: "mid" };
     }
 
@@ -839,17 +842,20 @@
       if (vix.ok) {
         $("vixValue").textContent = vix.value;
         const inZone = !!vix.entry_zone || vix.value > 30;
-        $("vixRating").textContent = inZone
-          ? "ENTRY ZONE — VIX > 30"
-          : (scores.vix?.label || "Below entry threshold");
+        const panic = vix.value > 40;
+        $("vixRating").textContent = panic
+          ? "PANIC — VIX > 40 (+3 pts)"
+          : inZone
+            ? "OVERRIDE — VIX > 30 (≥ Favorable)"
+            : (scores.vix?.label || "Below override threshold");
         $("vixRating").className = "rating " + (inZone ? "fear" : "neutral");
-        // Map 0–60 VIX onto bar (30 sits at 50%)
+        // Map 0–60 VIX onto bar
         const needlePct = Math.max(0, Math.min(100, (vix.value / 60) * 100));
         $("vixNeedle").style.left = needlePct + "%";
         $("vixDeltas").textContent =
-          `Prev ${vix.previous_close ?? "—"} · 1w ${fmtDelta(vix.value, vix.previous_1_week)} · 1m ${fmtDelta(vix.value, vix.previous_1_month)} · rule: >30 entry`;
+          `Prev ${vix.previous_close ?? "—"} · 1w ${fmtDelta(vix.value, vix.previous_1_week)} · 1m ${fmtDelta(vix.value, vix.previous_1_month)} · >30 override · >40 = +3`;
         const b = ptsBadge(scores.vix?.points);
-        $("vixBadge").textContent = inZone ? "+2 ENTRY" : b.text;
+        $("vixBadge").textContent = panic ? "+3 PANIC" : inZone ? "+2 OVERRIDE" : b.text;
         $("vixBadge").className = "badge " + (inZone ? "pos" : b.cls);
         $("vixSignal").innerHTML =
           `<strong>Signal:</strong> ${scores.vix?.signal || "—"}`;
@@ -868,15 +874,16 @@
       if (rsp.ok) {
         $("rspValue").textContent = rsp.value;
         $("rspRating").textContent = scores.rsp_rsi?.label || "RSI(14)";
-        const os = !!rsp.oversold || rsp.value <= 30;
+        const os = !!rsp.oversold || rsp.value <= 33;
+        const deep = rsp.value <= 30;
         const ob = !!rsp.overbought || rsp.value >= 70;
         $("rspRating").className =
           "rating " + (os ? "fear" : ob ? "greed" : "neutral");
         $("rspNeedle").style.left = Math.max(0, Math.min(100, rsp.value)) + "%";
         $("rspDeltas").textContent =
-          `Price $${rsp.price ?? "—"} · 1w RSI ${rsp.previous_1_week ?? "—"} · 1m ${rsp.previous_1_month ?? "—"} · as of ${rsp.as_of || "—"}`;
+          `Price $${rsp.price ?? "—"} · 1w RSI ${rsp.previous_1_week ?? "—"} · 1m ${rsp.previous_1_month ?? "—"} · ≤30=+3 · 30–33=+2 · 33–40=+1`;
         const b = ptsBadge(scores.rsp_rsi?.points);
-        $("rspBadge").textContent = os ? "+2 OVERSOLD" : ob ? "-2 OVERBOUGHT" : b.text;
+        $("rspBadge").textContent = deep ? "+3 OVERSOLD" : os ? "+2 OVERSOLD" : ob ? "-2 OVERBOUGHT" : b.text;
         $("rspBadge").className = "badge " + (os ? "pos" : ob ? "neg" : b.cls);
         $("rspSignal").innerHTML =
           `<strong>Signal:</strong> ${scores.rsp_rsi?.signal || "—"}`;
@@ -913,27 +920,43 @@
         $("fgSignal").innerHTML = `<strong>Error:</strong> ${fg.error || "fetch failed"}`;
       }
 
-      // AAII
+      // AAII (weekly — normally served from disk cache; Refresh does not re-hit AAII)
       if (aaii.ok) {
         $("aaiiBull").textContent = aaii.bullish.toFixed(1) + "%";
         $("aaiiNeut").textContent = aaii.neutral.toFixed(1) + "%";
         $("aaiiBear").textContent = aaii.bearish.toFixed(1) + "%";
         const spread = aaii.spread;
-        $("aaiiMeta").textContent =
+        let meta =
           `Week of ${aaii.as_of} · Bull−Bear spread ${spread >= 0 ? "+" : ""}${spread} · avg 37.5 / 31.5 / 31.0`;
+        if (aaii.cached) {
+          meta += ` · saved ${aaii.cache_age_hours ?? "?"}h ago`;
+          if (aaii.stale) meta += " (stale fallback)";
+        } else {
+          meta += " · just fetched";
+        }
+        $("aaiiMeta").textContent = meta;
+        const cacheTag = $("aaiiCacheTag");
+        if (cacheTag) {
+          if (aaii.stale) cacheTag.textContent = "stale cache";
+          else if (aaii.cached) cacheTag.textContent = "from cache";
+          else cacheTag.textContent = "live pull";
+        }
         const b = ptsBadge(scores.aaii?.points);
         $("aaiiBadge").textContent = b.text;
         $("aaiiBadge").className = "badge " + b.cls;
-        $("aaiiSignal").innerHTML =
-          `<strong>Signal:</strong> ${scores.aaii?.signal || "—"}`;
+        let sig = scores.aaii?.signal || "—";
+        if (aaii.cache_note) sig += ` · ${aaii.cache_note}`;
+        $("aaiiSignal").innerHTML = `<strong>Signal:</strong> ${sig}`;
       } else {
         $("aaiiBull").textContent = "—";
         $("aaiiNeut").textContent = "—";
         $("aaiiBear").textContent = "—";
         $("aaiiSignal").innerHTML = `<strong>Error:</strong> ${aaii.error || "fetch failed"}`;
+        const cacheTag = $("aaiiCacheTag");
+        if (cacheTag) cacheTag.textContent = "unavailable";
       }
 
-      // NAAIM
+      // NAAIM (weekly — disk cache; Refresh does not re-hit)
       if (naaim.ok) {
         $("naaimValue").innerHTML = naaim.value + `<span class="unit">%</span>`;
         $("naaimPrior").textContent =
@@ -956,23 +979,40 @@
               : "neutral");
         const meaningEl = $("naaimMeaning");
         if (meaningEl) {
+          let meaning;
           if (naaim.value >= 98 && naaim.value <= 100) {
-            meaningEl.textContent = "98–100%: Room to take profit";
+            meaning = "98–100%: Room to take profit";
           } else if (naaim.value >= 64 && naaim.value < 98) {
-            meaningEl.textContent = "64–<98%: Strong hold mode";
+            meaning = "64–<98%: Strong hold mode";
           } else if (naaim.value >= 40 && naaim.value < 64) {
-            meaningEl.textContent = "40–64%: Room to add risk (+1)";
+            meaning = "40–64%: Room to add risk (+1)";
           } else if (naaim.value < 40) {
-            meaningEl.textContent = "<40%: Very defensive — buy opportunity (+2)";
+            meaning = "<40%: Very defensive — buy opportunity (+2)";
           } else {
-            meaningEl.textContent = ">100%: Leveraged long — elevated risk (−2)";
+            meaning = ">100%: Leveraged long — elevated risk (−2)";
           }
+          if (naaim.cached) {
+            meaning += ` · saved ${naaim.cache_age_hours ?? "?"}h ago`;
+            if (naaim.stale) meaning += " (stale fallback)";
+          } else {
+            meaning += " · just fetched";
+          }
+          meaningEl.textContent = meaning;
         }
-        $("naaimSignal").innerHTML =
-          `<strong>Signal:</strong> ${scores.naaim?.signal || "—"}`;
+        const cacheTag = $("naaimCacheTag");
+        if (cacheTag) {
+          if (naaim.stale) cacheTag.textContent = "stale cache";
+          else if (naaim.cached) cacheTag.textContent = "from cache";
+          else cacheTag.textContent = "live pull";
+        }
+        let sig = scores.naaim?.signal || "—";
+        if (naaim.cache_note) sig += ` · ${naaim.cache_note}`;
+        $("naaimSignal").innerHTML = `<strong>Signal:</strong> ${sig}`;
       } else {
         $("naaimValue").innerHTML = "—";
         $("naaimSignal").innerHTML = `<strong>Error:</strong> ${naaim.error || "fetch failed"}`;
+        const cacheTag = $("naaimCacheTag");
+        if (cacheTag) cacheTag.textContent = "unavailable";
       }
 
       // Timestamp

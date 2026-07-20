@@ -12,3 +12,6 @@ naaim_*
 mm_*
 debug_*.py
 parse_*.py
+data/
+ui-screenshot.png
+screenshot_ui.py
