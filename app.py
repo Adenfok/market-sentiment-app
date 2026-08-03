@@ -649,10 +649,19 @@ def _fetch_naaim_macromicro(session: requests.Session) -> dict[str, Any]:
     Chart embeds series_last_rows as JSON-like string:
       series[0] = NAAIM index points [date, value] (older → newer)
       series[1] = often a moving average (ignore for scoring)
-    Official NAAIM site no longer publishes the free weekly table.
+    Official NAAIM site is subscription-only for current data (Aug 2026+).
+    Note: MacroMicro sometimes 403s from cloud hosts (e.g. Render).
     """
     url = "https://en.macromicro.me/charts/46198/naaim-exposure-index"
-    r = session.get(url, timeout=25)
+    headers = {
+        **BROWSER_HEADERS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://en.macromicro.me/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    r = session.get(url, headers=headers, timeout=25)
     r.raise_for_status()
     html = r.text
 
@@ -702,6 +711,127 @@ def _fetch_naaim_macromicro(session: requests.Session) -> dict[str, Any]:
         provider="macromicro.me",
         # Keep official program page as the conceptual source link
         source_url="https://naaim.org/programs/naaim-exposure-index/",
+    )
+
+
+def _fetch_naaim_ycharts(session: requests.Session) -> dict[str, Any]:
+    """
+    Fallback: YCharts public indicator page summarizes the latest NAAIM number.
+
+    Example copy:
+      "current level of 79.70, down from 84.02 last week"
+      "79.70 for Wk of Jul 29 2026"
+    """
+    url = "https://ycharts.com/indicators/naaim_number"
+    headers = {
+        **BROWSER_HEADERS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://ycharts.com/",
+    }
+    r = session.get(url, headers=headers, timeout=25)
+    r.raise_for_status()
+    text = _strip_html(r.text)
+
+    m = re.search(
+        r"current\s+level\s+of\s+(-?[\d.]+)\s*,\s*down from\s+(-?[\d.]+)\s+last week",
+        text,
+        re.I,
+    )
+    if not m:
+        m = re.search(
+            r"current\s+level\s+of\s+(-?[\d.]+)\s*,\s*(?:up|down)\s+from\s+(-?[\d.]+)\s+last week",
+            text,
+            re.I,
+        )
+    if not m:
+        m = re.search(r"current\s+level\s+of\s+(-?[\d.]+)", text, re.I)
+    if not m:
+        raise ValueError("YCharts NAAIM: no current level")
+
+    value = float(m.group(1))
+    prior = float(m.group(2)) if m.lastindex and m.lastindex >= 2 else None
+
+    as_of = None
+    dm = re.search(
+        r"(-?[\d.]+)\s+for\s+Wk\s+of\s+([A-Za-z]{3}\s+\d{1,2}\s+\d{4})",
+        text,
+        re.I,
+    )
+    if dm and abs(float(dm.group(1)) - value) < 0.05:
+        as_of = dm.group(2)
+    if not as_of:
+        dm2 = re.search(r"Wk\s+of\s+([A-Za-z]{3}\s+\d{1,2}\s+\d{4})", text, re.I)
+        as_of = dm2.group(1) if dm2 else None
+
+    history: list[dict[str, Any]] = []
+    if as_of:
+        history.append({"date": as_of, "value": round(value, 2)})
+    if prior is not None:
+        history.append({"date": "prior_week", "value": round(prior, 2)})
+
+    return _naaim_payload(
+        value=value,
+        as_of=as_of,
+        prior_week=prior,
+        history=history,
+        provider="ycharts.com",
+        source_url="https://ycharts.com/indicators/naaim_number",
+    )
+
+
+def _fetch_naaim_ceic(session: requests.Session) -> dict[str, Any]:
+    """
+    Fallback: CEIC summary page often states:
+      "reported at 79.700 Index in 29 Jul 2026"
+      "previous number of 84.020 Index for 22 Jul 2026"
+    """
+    url = "https://www.ceicdata.com/en/united-states/naaim-exposure-index"
+    headers = {
+        **BROWSER_HEADERS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.ceicdata.com/",
+    }
+    r = session.get(url, headers=headers, timeout=25)
+    r.raise_for_status()
+    text = _strip_html(r.text)
+
+    m = re.search(
+        r"reported\s+at\s+(-?[\d.]+)\s+Index\s+in\s+(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})",
+        text,
+        re.I,
+    )
+    if not m:
+        raise ValueError("CEIC NAAIM: no reported-at value")
+    value = float(m.group(1))
+    as_of = m.group(2)
+
+    prior = None
+    prior_date = None
+    pm = re.search(
+        r"previous\s+number\s+of\s+(-?[\d.]+)\s+Index\s+for\s+(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})",
+        text,
+        re.I,
+    )
+    if pm:
+        prior = float(pm.group(1))
+        prior_date = pm.group(2)
+
+    history: list[dict[str, Any]] = [{"date": as_of, "value": round(value, 2)}]
+    if prior is not None:
+        history.append(
+            {
+                "date": prior_date or "prior_week",
+                "value": round(prior, 2),
+            }
+        )
+
+    return _naaim_payload(
+        value=value,
+        as_of=as_of,
+        prior_week=prior,
+        history=history,
+        provider="ceicdata.com",
+        source_url="https://www.ceicdata.com/en/united-states/naaim-exposure-index",
     )
 
 
@@ -763,11 +893,16 @@ def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
     """
     Live NAAIM pull.
 
-    Prefer MacroMicro (still free / less bot-blocking). Official NAAIM last —
-    public weekly table is often gone.
+    Official NAAIM is subscription-only for current data (Aug 2026+). Prefer free
+    republishers; try several because cloud hosts often get 403 from one provider.
     """
     errors: list[str] = []
-    for fetcher in (_fetch_naaim_macromicro, _fetch_naaim_official):
+    for fetcher in (
+        _fetch_naaim_macromicro,
+        _fetch_naaim_ycharts,
+        _fetch_naaim_ceic,
+        _fetch_naaim_official,
+    ):
         try:
             return fetcher(session)
         except Exception as exc:  # noqa: BLE001

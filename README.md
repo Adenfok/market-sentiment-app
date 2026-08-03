@@ -12,7 +12,7 @@ Web app that pulls classic market-sentiment gauges and answers:
 | **RSP RSI(14)** | Invesco S&P 500 Equal Weight (Yahoo) | Daily | **≤30 = +3** · 30–33 = +2 · 33–40 = +1 |
 | **Fear & Greed Index** | [CNN](https://edition.cnn.com/markets/fear-and-greed) | Daily | ≤10 = +3 · 10–25 = +2 · fear −1 · greed +1 · ≥75 = −2 overhype |
 | **AAII Survey** | [AAII](https://www.aaii.com/sentimentsurvey) | Weekly | Half weight (raw scores × 0.5) |
-| **NAAIM Exposure** | [MacroMicro](https://en.macromicro.me/charts/46198/naaim-exposure-index) (fallback [NAAIM](https://naaim.org/programs/naaim-exposure-index/)) | Weekly | Half weight · Strong hold / take-profit bands |
+| **NAAIM Exposure** | [MacroMicro](https://en.macromicro.me/charts/46198/naaim-exposure-index) / [YCharts](https://ycharts.com/indicators/naaim_number) / [CEIC](https://www.ceicdata.com/en/united-states/naaim-exposure-index) (official NAAIM is subscription-only for current data) | Weekly | Half weight · Strong hold / take-profit bands |
 
 **Hard override:** when **VIX > 30**, verdict is at least **Favorable to Enter** (even if other gauges are mixed).
 
