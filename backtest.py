@@ -43,13 +43,16 @@ import requests
 
 # Reuse production scorecard rules (single source of truth)
 from app import (
+    AVOID_CUT,
     BROWSER_HEADERS,
+    SOFT_CAUTION_FLOOR,
     compute_rsi,
     score_aaii,
     score_fear_greed,
     score_naaim,
     score_rsp_rsi,
     score_vix,
+    suggested_equity_weight,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -382,6 +385,7 @@ class DayRow:
     n_signals: int = 0
     verdict: str = ""
     vix_entry: bool = False
+    above_200dma: bool | None = None
 
 
 def build_panel(
@@ -392,6 +396,7 @@ def build_panel(
     aaii: list[dict[str, Any]] | None = None,
     naaim: list[dict[str, Any]] | None = None,
     rsi_period: int = 14,
+    sma_window: int = 200,
 ) -> list[DayRow]:
     vix_map = {r["date"]: r["close"] for r in vix}
     rsp_map = {r["date"]: r["close"] for r in rsp}
@@ -410,6 +415,15 @@ def build_panel(
         val = compute_rsi(window, period=rsi_period)
         if val is not None:
             rsi_by_date[rsp_dates[i]] = round(val, 2)
+
+    # SPY 200DMA on the SPY series (price regime tag for Neutral / Caution)
+    spy_closes = [r["close"] for r in spy]
+    spy_above_200: dict[str, bool] = {}
+    for i, s in enumerate(spy):
+        if i + 1 < sma_window:
+            continue
+        sma = sum(spy_closes[i + 1 - sma_window : i + 1]) / sma_window
+        spy_above_200[s["date"]] = s["close"] >= sma
 
     # Forward-fill all gauges onto SPY calendar
     last_vix = None
@@ -446,6 +460,7 @@ def build_panel(
             aaii_neut=last_aaii["neutral"] if last_aaii else None,
             aaii_bear=last_aaii["bearish"] if last_aaii else None,
             naaim=last_naaim,
+            above_200dma=spy_above_200.get(d),
         )
 
         total = 0
@@ -503,15 +518,18 @@ def verdict_from_total(
     """
     Map points → verdict (aligned with app.build_conclusion).
 
-    App (5 gauges): strong≥6, fav≥2 + confirm, neut≥0, caution≥-3, else avoid.
+    App (5 gauges): strong≥6, fav≥2 + confirm, neut≥0,
+    soft_caution ≥−2.5, hard_caution ≥−5, avoid <−5.
     Favorable requires total≥2 AND (VIX pts≥2 OR RSI pts≥2).
     VIX > 30 (entry_zone) floors at favorable (implies VIX pts≥2).
-    Scale strong/fav thresholds if fewer gauges (backtest partial panels).
+    Scale strong/fav/caution thresholds if fewer gauges (backtest partial panels).
     """
     scale = max(n_signals, 1) / 5.0
     strong = max(2, int(round(6 * scale)))
     fav = max(1, int(round(2 * scale)))
-    caution = min(-1, int(round(-3 * scale)))
+    # Full panel: soft −2.5, avoid −5; scale for partial panels
+    soft_cut = SOFT_CAUTION_FLOOR * scale  # 5 gauges → -2.5
+    avoid_cut = min(-2.0, AVOID_CUT * scale)  # 5 gauges → -5
 
     if total >= strong:
         v = "strong_buy"
@@ -519,13 +537,15 @@ def verdict_from_total(
         v = "favorable"
     elif total >= 0:
         v = "neutral"
-    elif total >= caution:
-        v = "caution"
+    elif total >= soft_cut:
+        v = "soft_caution"
+    elif total >= avoid_cut:
+        v = "hard_caution"
     else:
         v = "avoid"
 
     # Hard rule: VIX > 30 elevates to at least favorable
-    if vix_entry and v in ("neutral", "caution", "avoid"):
+    if vix_entry and v in ("neutral", "soft_caution", "hard_caution", "caution", "avoid"):
         v = "favorable"
 
     # Confirmed Favorable only: need VIX pts≥2 or RSI pts≥2
@@ -537,20 +557,20 @@ def verdict_from_total(
     return v
 
 
-def allocation_for_verdict(verdict: str, strategy: str) -> float:
-    """Target equity weight in [0, 1]."""
+def allocation_for_verdict(
+    verdict: str,
+    strategy: str,
+    *,
+    above_200dma: bool | None = None,
+) -> float:
+    """Target equity weight in [0, 1]. Aligned with app.suggested_equity_weight."""
     if strategy == "buy_hold":
         return 1.0
     if strategy == "scorecard_binary":
         return 1.0 if verdict in ("strong_buy", "favorable") else 0.0
     if strategy == "scorecard_tiered":
-        return {
-            "strong_buy": 1.0,
-            "favorable": 1.0,
-            "neutral": 0.5,   # selective entry
-            "caution": 0.25,
-            "avoid": 0.0,
-        }.get(verdict, 0.0)
+        # Don't over-trade Neutral (1.0); soft/hard caution milder than old 0.25
+        return suggested_equity_weight(verdict, above_200dma=above_200dma)
     if strategy == "vix_override_binary":
         # same as binary; vix already folded into verdict
         return 1.0 if verdict in ("strong_buy", "favorable") else 0.0
@@ -609,7 +629,11 @@ def run_strategy(rows: list[DayRow], strategy: str, initial: float = 10_000.0) -
         today = rows[i]
         nxt = rows[i + 1]
         # Signal known at close t → earn return from close t to close t+1
-        weight = allocation_for_verdict(today.verdict, strategy)
+        weight = allocation_for_verdict(
+            today.verdict,
+            strategy,
+            above_200dma=today.above_200dma,
+        )
         r = (nxt.spy / today.spy) - 1.0
         port_r = weight * r
         equity *= 1.0 + port_r
@@ -724,7 +748,7 @@ def effectiveness_scorecard(core: TradeStats, bh: TradeStats, buckets: list[dict
     for g in ("strong_buy", "favorable"):
         if g in by_b:
             good.append(by_b[g]["mean_fwd"])
-    for g in ("caution", "avoid"):
+    for g in ("soft_caution", "hard_caution", "caution", "avoid"):
         if g in by_b:
             bad.append(by_b[g]["mean_fwd"])
 

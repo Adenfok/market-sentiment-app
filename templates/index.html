@@ -142,7 +142,38 @@
     .hero.buy { --verdict-color: #6fdc9f; }
     .hero.neutral { --verdict-color: var(--yellow); }
     .hero.caution { --verdict-color: var(--orange); }
+    .hero.caution-soft { --verdict-color: #e8a84a; }
+    .hero.caution-hard { --verdict-color: #e07040; }
     .hero.avoid { --verdict-color: var(--red); }
+
+    .alloc-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 0.9rem;
+    }
+    .alloc-pill strong {
+      font-family: "JetBrains Mono", monospace;
+      color: var(--text);
+    }
+    .regime-tag {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--muted);
+    }
+    .regime-tag.above { color: #6fdc9f; border-color: rgba(111, 220, 159, 0.35); }
+    .regime-tag.below { color: #f0a0a0; border-color: rgba(240, 160, 160, 0.35); }
 
     .hero-top {
       display: flex;
@@ -615,6 +646,10 @@
         <span>Favorable entry</span>
       </div>
       <p class="summary skeleton" id="summary">Fetching market sentiment data…</p>
+      <div class="alloc-pill" id="allocPill" style="display:none">
+        Suggested equity weight: <strong id="allocPct">—</strong>
+        <span class="regime-tag" id="regimeTag" style="display:none"></span>
+      </div>
       <ul class="details" id="details"></ul>
     </section>
 
@@ -723,7 +758,7 @@
         <div class="card-head">
           <div>
             <h2>NAAIM Exposure</h2>
-            <div class="src"><a href="https://naaim.org/programs/naaim-exposure-index/" target="_blank" rel="noopener">NAAIM</a> · weekly · <span id="naaimCacheTag">cached</span></div>
+            <div class="src"><a href="https://en.macromicro.me/charts/46198/naaim-exposure-index" target="_blank" rel="noopener">MacroMicro</a> / <a href="https://naaim.org/programs/naaim-exposure-index/" target="_blank" rel="noopener">NAAIM</a> · weekly · <span id="naaimCacheTag">cached</span></div>
           </div>
           <span class="badge" id="naaimBadge">—</span>
         </div>
@@ -758,7 +793,9 @@
       </p>
       <ul>
         <li><strong style="color:var(--text)">VIX</strong> — &gt;40 = <strong style="color:var(--green)">+3</strong> · 30–40 = +2 · 23–30 = 0 (choppy) · 20–23 = +1 · 15–20 = 0. <strong>Hard override: VIX &gt; 30 → at least Favorable to Enter.</strong></li>
-        <li><strong style="color:var(--text)">Verdict totals</strong> — Strong Buy ≥ <strong>+6</strong> · Favorable ≥ <strong>+2</strong> <em>and</em> confirmed (VIX pts ≥ 2 <strong>or</strong> RSI pts ≥ 2) · Neutral ≥ <strong>0</strong> (or +2…+6 unconfirmed) · Caution ≥ <strong>−3</strong> · Avoid &lt; <strong>−3</strong>.</li>
+        <li><strong style="color:var(--text)">Verdict totals</strong> — Strong Buy ≥ <strong>+6</strong> · Favorable ≥ <strong>+2</strong> <em>and</em> confirmed (VIX pts ≥ 2 <strong>or</strong> RSI pts ≥ 2) · Neutral ≥ <strong>0</strong> (or +2…+6 unconfirmed; <em>stay invested</em>) · Soft Caution ≥ <strong>−2.5</strong> and &lt; 0 · Hard Caution ≥ <strong>−5</strong> and &lt; −2.5 · Avoid &lt; <strong>−5</strong>.</li>
+        <li><strong style="color:var(--text)">Suggested allocation</strong> — Strong/Favorable/Neutral = <strong>100%</strong> (don’t over-trade Neutral) · Soft Caution ≈ <strong>75%</strong> · Hard Caution ≈ <strong>50%</strong> · Avoid = <strong>0%</strong>. Below 200DMA only nudges Caution lower.</li>
+        <li><strong style="color:var(--text)">Price regime (200DMA)</strong> — SPY vs 200-day SMA is tagged on <em>Neutral / Soft·Hard Caution only</em> (not on Strong Buy, Favorable, or Avoid).</li>
         <li><strong style="color:var(--text)">RSP RSI(14)</strong> — ≤30 = <strong style="color:var(--green)">+3</strong> · 30–33 = +2 · 33–40 = +1 · 40–60 = 0 · 60–70 = −1 · ≥70 = −2.</li>
         <li><strong style="color:var(--text)">Fear &amp; Greed</strong> — ≤10 = +3 · 10–25 = +2 · 25–45 fear = −1 (risk-off) · 55–75 greed = +1 (risk-on) · ≥75 = −2 (overhype).</li>
         <li><strong style="color:var(--text)">AAII</strong> — half weight (raw ±2 → ±1, ±1 → ±0.5). Weekly cache ~6 days.</li>
@@ -826,6 +863,32 @@
       const total = c.total_points ?? 0;
       const pct = ((total - minP) / (maxP - minP)) * 100;
       $("meterFill").style.width = Math.max(4, Math.min(100, pct)) + "%";
+
+      // Suggested allocation + optional 200DMA regime tag
+      const allocPill = $("allocPill");
+      const alloc = c.suggested_allocation;
+      if (alloc != null && Number.isFinite(Number(alloc))) {
+        allocPill.style.display = "inline-flex";
+        $("allocPct").textContent = Math.round(Number(alloc) * 100) + "%";
+      } else {
+        allocPill.style.display = "none";
+      }
+      const regime = c.price_regime || data.spy_regime || null;
+      const regimeTag = $("regimeTag");
+      if (regime && regime.applies && regime.label) {
+        regimeTag.style.display = "inline-block";
+        regimeTag.textContent = regime.label;
+        regimeTag.className =
+          "regime-tag " + (regime.above_200dma ? "above" : "below");
+      } else if (regime && regime.ok && regime.label &&
+                 ["neutral", "caution-soft", "caution-hard"].includes(c.verdict_class)) {
+        regimeTag.style.display = "inline-block";
+        regimeTag.textContent = regime.label;
+        regimeTag.className =
+          "regime-tag " + (regime.above_200dma ? "above" : "below");
+      } else {
+        regimeTag.style.display = "none";
+      }
 
       const details = $("details");
       details.innerHTML = "";
@@ -969,7 +1032,8 @@
         $("naaimBadge").className = "badge " + b.cls;
         // Mode label under the big number
         const mode = scores.naaim?.label || "Active managers’ avg equity exposure";
-        $("naaimRating").textContent = mode;
+        const via = naaim.provider ? ` · via ${naaim.provider}` : "";
+        $("naaimRating").textContent = mode + via;
         $("naaimRating").className =
           "rating " +
           (scores.naaim?.points > 0

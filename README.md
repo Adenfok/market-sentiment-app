@@ -12,22 +12,25 @@ Web app that pulls classic market-sentiment gauges and answers:
 | **RSP RSI(14)** | Invesco S&P 500 Equal Weight (Yahoo) | Daily | **≤30 = +3** · 30–33 = +2 · 33–40 = +1 |
 | **Fear & Greed Index** | [CNN](https://edition.cnn.com/markets/fear-and-greed) | Daily | ≤10 = +3 · 10–25 = +2 · fear −1 · greed +1 · ≥75 = −2 overhype |
 | **AAII Survey** | [AAII](https://www.aaii.com/sentimentsurvey) | Weekly | Half weight (raw scores × 0.5) |
-| **NAAIM Exposure** | [NAAIM](https://naaim.org/programs/naaim-exposure-index/) | Weekly | Half weight · Strong hold / take-profit bands |
+| **NAAIM Exposure** | [MacroMicro](https://en.macromicro.me/charts/46198/naaim-exposure-index) (fallback [NAAIM](https://naaim.org/programs/naaim-exposure-index/)) | Weekly | Half weight · Strong hold / take-profit bands |
 
 **Hard override:** when **VIX > 30**, verdict is at least **Favorable to Enter** (even if other gauges are mixed).
 
 **Verdict from total points:**
 
-| Total score | Verdict |
-|-------------|---------|
-| **≥ +6** | Strong Buy Zone |
-| **≥ +2** and **&lt; +6**, **and** (VIX pts ≥ 2 **or** RSI pts ≥ 2) | Favorable to Enter |
-| **≥ +2** but **not** VIX/RSI confirmed | Neutral — Selective Entry |
-| **≥ 0** and **&lt; +2** | Neutral — Selective Entry |
-| **≥ −3** and **&lt; 0** | Caution — Wait for Better Levels |
-| **&lt; −3** | Poor Entry Zone (avoid) |
+| Total score | Verdict | Suggested equity |
+|-------------|---------|------------------|
+| **≥ +6** | Strong Buy Zone | 100% |
+| **≥ +2** and **&lt; +6**, **and** (VIX pts ≥ 2 **or** RSI pts ≥ 2) | Favorable to Enter | 100% |
+| **≥ +2** but **not** VIX/RSI confirmed | Neutral — Hold / Selective | **100%** (don’t over-trade) |
+| **≥ 0** and **&lt; +2** | Neutral — Hold / Selective | **100%** |
+| **≥ −2.5** and **&lt; 0** | Soft Caution — Trim Lightly | ~75% (~65% if SPY below 200DMA) |
+| **≥ −5** and **&lt; −2.5** | Hard Caution — Reduce Risk | ~50% (~40% if SPY below 200DMA) |
+| **&lt; −5** | Poor Entry Zone (avoid) | 0% |
 
 **Confirmed Favorable** (VIX≥2 or RSI≥2) is required so Favorable is not driven only by surveys/F&G.
+
+**Price regime (200DMA):** SPY vs 200-day SMA is shown as a tag on **Neutral / Soft·Hard Caution only** (not on Strong Buy, Favorable, or Avoid). It nudges Caution weights slightly when below the average; it never forces Neutral to cash.
 
 ## Run locally
 

@@ -560,8 +560,158 @@ def fetch_rsp_rsi(session: requests.Session, period: int = 14) -> dict[str, Any]
     }
 
 
-def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
-    """Live NAAIM Exposure Index from official NAAIM page."""
+def fetch_spy_regime(session: requests.Session, window: int = 200) -> dict[str, Any]:
+    """
+    SPY close vs 200-day SMA — price-regime context only for Neutral / Caution.
+
+    Not used for Strong Buy / Favorable / Avoid (those are already clear).
+    """
+    # ~14 months covers 200 trading days + buffer for holidays
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=18mo"
+    r = session.get(url, timeout=20)
+    r.raise_for_status()
+    payload = r.json()
+    result = (payload.get("chart") or {}).get("result") or []
+    if not result:
+        raise ValueError("Yahoo SPY chart returned no result")
+
+    meta = result[0].get("meta") or {}
+    timestamps = result[0].get("timestamp") or []
+    closes_raw = (
+        ((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    )
+    pairs = [
+        (ts, float(cl))
+        for ts, cl in zip(timestamps, closes_raw)
+        if cl is not None
+    ]
+    if len(pairs) < window:
+        raise ValueError(f"Need at least {window} SPY closes for {window}DMA")
+
+    closes = [c for _, c in pairs]
+    sma = sum(closes[-window:]) / window
+    price = float(meta.get("regularMarketPrice") or closes[-1])
+    last_ts = pairs[-1][0]
+    as_of = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    above = price >= sma
+    pct_vs = ((price / sma) - 1.0) * 100.0
+
+    return {
+        "source": "SPY vs 200-day SMA",
+        "source_url": "https://finance.yahoo.com/quote/SPY/",
+        "symbol": "SPY",
+        "price": round(price, 2),
+        "sma_200": round(sma, 2),
+        "window": window,
+        "above_200dma": above,
+        "pct_vs_200dma": round(pct_vs, 2),
+        "label": "Above 200DMA" if above else "Below 200DMA",
+        "as_of": as_of,
+        "scale": "Tag only for Neutral / Soft·Hard Caution — not a standalone signal",
+        "ok": True,
+        "error": None,
+    }
+
+
+def _naaim_payload(
+    *,
+    value: float,
+    as_of: str | None,
+    prior_week: float | None,
+    history: list[dict[str, Any]],
+    provider: str,
+    source_url: str,
+    quarter_avg: float | None = None,
+) -> dict[str, Any]:
+    """Normalize NAAIM readings into the API payload."""
+    return {
+        "source": "NAAIM Exposure Index",
+        "source_url": source_url,
+        "provider": provider,
+        "value": round(float(value), 2),
+        "as_of": as_of,
+        "quarter_avg": quarter_avg,
+        "prior_week": round(float(prior_week), 2) if prior_week is not None else None,
+        "history": history,
+        "scale": "-200 leveraged short · 0 cash · 100 fully invested · 200 leveraged long",
+        "ok": True,
+        "error": None,
+        "cached": False,
+        "stale": False,
+        "cache_age_hours": 0.0,
+    }
+
+
+def _fetch_naaim_macromicro(session: requests.Session) -> dict[str, Any]:
+    """
+    Primary: MacroMicro republishes weekly NAAIM Exposure Index.
+
+    Chart embeds series_last_rows as JSON-like string:
+      series[0] = NAAIM index points [date, value] (older → newer)
+      series[1] = often a moving average (ignore for scoring)
+    Official NAAIM site no longer publishes the free weekly table.
+    """
+    url = "https://en.macromicro.me/charts/46198/naaim-exposure-index"
+    r = session.get(url, timeout=25)
+    r.raise_for_status()
+    html = r.text
+
+    m = re.search(r'"series_last_rows"\s*:\s*"(\[\[\[.+?\]\]\])"', html)
+    if not m:
+        m = re.search(r"series_last_rows\"?\s*:\s*\"?(\[\[\[.+?\]\]\])", html)
+    if not m:
+        raise ValueError("MacroMicro NAAIM missing series_last_rows")
+
+    raw = m.group(1).replace('\\"', '"').replace("\\/", "/")
+    try:
+        matrix = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Could not decode MacroMicro NAAIM matrix: {exc}") from exc
+
+    if not matrix or not isinstance(matrix, list):
+        raise ValueError("MacroMicro NAAIM matrix empty")
+
+    # series[0] = Exposure Index
+    series = matrix[0]
+    if not isinstance(series, list) or not series:
+        raise ValueError("MacroMicro NAAIM series[0] empty")
+
+    points: list[tuple[str, float]] = []
+    for pt in series:
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            try:
+                points.append((str(pt[0]), float(pt[1])))
+            except (TypeError, ValueError):
+                continue
+    if not points:
+        raise ValueError("MacroMicro NAAIM points unparsable")
+
+    # MacroMicro lists older → newer → reverse to newest-first
+    points = list(reversed(points))
+    value = points[0][1]
+    as_of = points[0][0]
+    prior = points[1][1] if len(points) > 1 else None
+    history = [{"date": d, "value": round(v, 2)} for d, v in points[:8]]
+
+    # Optional: series[1] may be MA; not used for score
+    return _naaim_payload(
+        value=value,
+        as_of=as_of,
+        prior_week=prior,
+        history=history,
+        provider="macromicro.me",
+        # Keep official program page as the conceptual source link
+        source_url="https://naaim.org/programs/naaim-exposure-index/",
+    )
+
+
+def _fetch_naaim_official(session: requests.Session) -> dict[str, Any]:
+    """
+    Fallback: official NAAIM page.
+
+    As of mid-2026 the free page often no longer embeds the weekly number
+    (subscriber / members-only). Kept as a secondary source if they restore it.
+    """
     url = "https://naaim.org/programs/naaim-exposure-index/"
     r = session.get(url, timeout=20)
     r.raise_for_status()
@@ -584,7 +734,7 @@ def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
     elif hist:
         value = float(hist[0][1])
     else:
-        raise ValueError("Could not parse NAAIM exposure number")
+        raise ValueError("Could not parse NAAIM exposure number (page may be members-only)")
 
     history = [{"date": d, "value": float(v)} for d, v in hist[:8]]
 
@@ -598,21 +748,31 @@ def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
         re.I,
     )
 
-    return {
-        "source": "NAAIM Exposure Index",
-        "source_url": "https://naaim.org/programs/naaim-exposure-index/",
-        "value": value,
-        "as_of": history[0]["date"] if history else (posted.group(1) if posted else None),
-        "quarter_avg": float(q_avg.group(1)) if q_avg else None,
-        "prior_week": history[1]["value"] if len(history) > 1 else None,
-        "history": history,
-        "scale": "-200 leveraged short · 0 cash · 100 fully invested · 200 leveraged long",
-        "ok": True,
-        "error": None,
-        "cached": False,
-        "stale": False,
-        "cache_age_hours": 0.0,
-    }
+    return _naaim_payload(
+        value=value,
+        as_of=history[0]["date"] if history else (posted.group(1) if posted else None),
+        prior_week=history[1]["value"] if len(history) > 1 else None,
+        history=history,
+        provider="naaim.org",
+        source_url="https://naaim.org/programs/naaim-exposure-index/",
+        quarter_avg=float(q_avg.group(1)) if q_avg else None,
+    )
+
+
+def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
+    """
+    Live NAAIM pull.
+
+    Prefer MacroMicro (still free / less bot-blocking). Official NAAIM last —
+    public weekly table is often gone.
+    """
+    errors: list[str] = []
+    for fetcher in (_fetch_naaim_macromicro, _fetch_naaim_official):
+        try:
+            return fetcher(session)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{fetcher.__name__}: {exc}")
+    raise ValueError("All NAAIM sources failed → " + " | ".join(errors))
 
 
 def get_naaim(session: requests.Session, *, force: bool = False) -> dict[str, Any]:
@@ -621,6 +781,7 @@ def get_naaim(session: requests.Session, *, force: bool = False) -> dict[str, An
 
     Same policy as AAII: Refresh does not re-hit NAAIM; use refresh_naaim=1 or
     refresh_weekly=1 to force a live pull.
+    Primary live source: MacroMicro chart (official site often paywalled).
     """
     cached, saved_ts = _load_weekly_disk_cache(NAAIM_CACHE_PATH)
     age = (time.time() - saved_ts) if saved_ts else None
@@ -659,7 +820,7 @@ def score_fear_greed(value: float) -> dict[str, Any]:
       25–45 → −1 (fear = risk-off regime)
       45–55 →  0
       55–75 → +1 (greed = risk-on)
-      ≥75   → +1 (extreme greed still risk-on)
+      ≥75   → −2 (extreme greed / overhype)
     """
     if value <= 10:
         pts, label, signal = (
@@ -897,12 +1058,51 @@ def score_rsp_rsi(value: float) -> dict[str, Any]:
     }
 
 
+# Soft vs hard Caution split (full 5-gauge panel). Soft = mild stretch; hard = deeper.
+SOFT_CAUTION_FLOOR = -2.5  # total in [SOFT_CAUTION_FLOOR, 0) → soft
+# total in [AVOID_CUT, SOFT_CAUTION_FLOOR) → hard; total < AVOID_CUT → avoid
+AVOID_CUT = -5.0
+
+
+def suggested_equity_weight(
+    verdict_class: str,
+    *,
+    above_200dma: bool | None = None,
+) -> float:
+    """
+    Suggested equity allocation in [0, 1] for the live app / tiered backtest.
+
+    Don't over-trade Neutral: stay fully invested (1.0) — mixed mid-range is not a
+    sell signal. Soft Caution trims lightly; Hard Caution cuts more; Avoid = cash.
+    Price regime (200DMA) only nudges Caution weights, never Neutral.
+    """
+    if verdict_class in ("strong-buy", "strong_buy"):
+        return 1.0
+    if verdict_class in ("buy", "favorable"):
+        return 1.0
+    if verdict_class == "neutral":
+        return 1.0  # stay invested — do not cut just because score is flat
+    if verdict_class in ("caution-soft", "soft_caution", "caution"):
+        # mild trim; slightly deeper only if clearly below 200DMA
+        if above_200dma is False:
+            return 0.65
+        return 0.75
+    if verdict_class in ("caution-hard", "hard_caution"):
+        if above_200dma is False:
+            return 0.40
+        return 0.50
+    if verdict_class == "avoid":
+        return 0.0
+    return 1.0
+
+
 def build_conclusion(
     fg: dict[str, Any],
     aaii: dict[str, Any],
     naaim: dict[str, Any],
     vix: dict[str, Any],
     rsp_rsi: dict[str, Any],
+    spy_regime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scores = {
         "fear_greed": score_fear_greed(fg["value"]) if fg.get("ok") else None,
@@ -924,6 +1124,8 @@ def build_conclusion(
             "disclaimer": DISCLAIMER,
             "scores": scores,
             "vix_entry_zone": False,
+            "suggested_allocation": 1.0,
+            "price_regime": None,
         }
 
     total = sum(s["points"] for s in available)
@@ -934,12 +1136,13 @@ def build_conclusion(
     # Verdict from total score (points can be half-integers with AAII/NAAIM ×0.5)
     #   Strong Buy Zone              total ≥ +6
     #   Favorable to Enter           total ≥ +2  AND confirmed (VIX pts≥2 OR RSI pts≥2)
-    #   Neutral — Selective Entry    total ≥  0  (or total≥2 but unconfirmed)
-    #   Caution — Wait               total ≥ −3
-    #   Poor Entry Zone (avoid)      total < −3
+    #   Neutral — Hold / Selective   total ≥  0  (or total≥2 but unconfirmed)
+    #   Soft Caution                 total ≥ −2.5 and < 0
+    #   Hard Caution                 total ≥ −5  and < −2.5
+    #   Poor Entry Zone (avoid)      total < −5
     #
     # Confirmed Favorable (backtest 2021–2026-06): hit ~76% / mean ~+3.3% 21d
-    # vs bare Favorable ~65% / +1.4%.
+    # Avoid total < -5 (10y): 21d down ~42%, mean ~0 (slightly negative)
     vix_pts = float(scores["vix"]["points"]) if scores["vix"] else 0.0
     rsi_pts = float(scores["rsp_rsi"]["points"]) if scores["rsp_rsi"] else 0.0
     favorable_confirmed = (vix_pts >= 2.0) or (rsi_pts >= 2.0)
@@ -959,34 +1162,47 @@ def build_conclusion(
             )
         else:
             # Soft +2…+6 without vol/RSI confirm → Neutral (not true Favorable)
-            verdict, vclass = "Neutral — Selective Entry", "neutral"
+            verdict, vclass = "Neutral — Hold / Selective", "neutral"
             summary = (
                 f"Raw score is +{total:g} but Favorable requires confirmation "
                 f"(VIX pts ≥ 2 or RSI pts ≥ 2). Currently VIX={vix_pts:g}, RSI={rsi_pts:g}. "
-                "Treat as selective / wait for vol or RSI stress."
+                "Stay invested — do not over-trade a mid-range unconfirmed score."
             )
     elif total >= 0:
-        verdict, vclass = "Neutral — Selective Entry", "neutral"
+        verdict, vclass = "Neutral — Hold / Selective", "neutral"
         summary = (
-            "Signals are mixed or mid-range. Not a screaming buy or sell. Prefer "
-            "high-quality names, dollar-cost averaging, and position sizing discipline."
+            "Signals are mixed or mid-range. Stay invested; this is not a sell signal. "
+            "Prefer high-quality names and disciplined adds — avoid active de-risking "
+            "just because the score is flat."
         )
-    elif total >= -3:
-        verdict, vclass = "Caution — Wait for Better Levels", "caution"
+    elif total >= SOFT_CAUTION_FLOOR:
+        # Soft Caution: mild optimism/complacency stretch (−2.5 … 0)
+        verdict, vclass = "Soft Caution — Trim Lightly", "caution-soft"
         summary = (
-            "Crowd optimism / high exposure is elevated. Entering aggressively now has a "
-            "weaker risk/reward from a pure sentiment perspective."
+            "Mild stretch toward complacency/optimism (soft caution). Stay mostly "
+            "invested; trim new risk lightly rather than a full de-risk. Prefer patience "
+            "on aggressive adds until the score improves."
+        )
+    elif total >= AVOID_CUT:
+        # Hard Caution: deeper stretch (−5 … −2.5)
+        verdict, vclass = "Hard Caution — Reduce Risk", "caution-hard"
+        summary = (
+            "Sentiment is more stretched (hard caution). Reduce new risk and consider "
+            "trimming; avoid chasing. Still not a full Avoid — wait for better levels "
+            "or a clearer stress signal before adding."
         )
     else:
+        # total < -5
         verdict, vclass = "Poor Entry Zone", "avoid"
         summary = (
-            "Extreme greed and/or crowded long positioning dominate. Contrarian history "
-            "suggests waiting for a fear spike or pullback before new risk."
+            "Deep overhype / crowded risk-on (total < −5). Historically a weaker "
+            "forward-return regime than milder caution — prioritize de-risking and no chase."
         )
 
     # Hard rule: VIX > 30 floors the verdict at Favorable (implies VIX pts ≥ 2 → confirmed)
+    caution_classes = ("caution", "caution-soft", "caution-hard")
     if vix_entry:
-        if vclass in ("caution", "avoid", "neutral"):
+        if vclass in caution_classes or vclass in ("avoid", "neutral"):
             verdict, vclass = "Favorable to Enter", "buy"
             summary = (
                 f"VIX is {vix['value']} (> 30) — hard override to Favorable to Enter "
@@ -996,6 +1212,54 @@ def build_conclusion(
             summary = (
                 f"VIX is {vix['value']} (> 30) — vol confirmation for Favorable. "
             ) + summary
+
+    # Price regime (200DMA): tag Neutral / Caution only — not SB / Fav / Avoid
+    regime_payload: dict[str, Any] | None = None
+    above_200: bool | None = None
+    if spy_regime and spy_regime.get("ok"):
+        above_200 = bool(spy_regime.get("above_200dma"))
+        regime_payload = {
+            "symbol": spy_regime.get("symbol", "SPY"),
+            "price": spy_regime.get("price"),
+            "sma_200": spy_regime.get("sma_200"),
+            "above_200dma": above_200,
+            "pct_vs_200dma": spy_regime.get("pct_vs_200dma"),
+            "label": spy_regime.get("label"),
+            "as_of": spy_regime.get("as_of"),
+            "applies": False,
+            "note": None,
+        }
+        if vclass in ("neutral", "caution-soft", "caution-hard"):
+            regime_payload["applies"] = True
+            if above_200:
+                tag = " · above 200DMA"
+                regime_payload["note"] = (
+                    f"SPY {spy_regime['price']} is above its 200-day SMA "
+                    f"({spy_regime['sma_200']}) — trend still supportive; hold bias "
+                    "within this sentiment band."
+                )
+                summary = summary + (
+                    f" Price regime: SPY above 200DMA ({spy_regime['pct_vs_200dma']:+.1f}%)."
+                )
+            else:
+                tag = " · below 200DMA"
+                regime_payload["note"] = (
+                    f"SPY {spy_regime['price']} is below its 200-day SMA "
+                    f"({spy_regime['sma_200']}) — weaker trend; be more defensive "
+                    "within this sentiment band."
+                )
+                summary = summary + (
+                    f" Price regime: SPY below 200DMA ({spy_regime['pct_vs_200dma']:+.1f}%) "
+                    "— prefer more defensive sizing."
+                )
+            # Append short tag to the human verdict for Neutral/Caution
+            verdict = verdict + tag
+        else:
+            regime_payload["note"] = (
+                "200DMA tag applies only to Neutral / Caution (not shown on this verdict)."
+            )
+
+    alloc = suggested_equity_weight(vclass, above_200dma=above_200)
 
     details = []
     if scores["vix"]:
@@ -1026,6 +1290,12 @@ def build_conclusion(
         details.append(
             f"NAAIM exposure {naaim['value']}%: {scores['naaim']['signal']}."
         )
+    if regime_payload and regime_payload.get("applies") and regime_payload.get("note"):
+        details.append(regime_payload["note"])
+    details.append(
+        f"Suggested equity weight: {alloc:.0%} "
+        f"(Neutral stays fully invested; Soft Caution ~75%; Hard Caution ~50%; Avoid 0%)."
+    )
 
     def _score_payload(v: dict[str, Any] | None) -> dict[str, Any] | None:
         if not v:
@@ -1051,6 +1321,8 @@ def build_conclusion(
         "disclaimer": DISCLAIMER,
         "vix_entry_zone": vix_entry,
         "favorable_confirmed": favorable_confirmed,
+        "suggested_allocation": alloc,
+        "price_regime": regime_payload,
         "scores": {k: _score_payload(v) for k, v in scores.items()},
     }
 
@@ -1127,7 +1399,13 @@ def collect_all(
         rsp_rsi = {"ok": False, "error": str(exc), "source": "RSP RSI(14)"}
         errors.append(f"RSP RSI: {exc}")
 
-    conclusion = build_conclusion(fg, aaii, naaim, vix, rsp_rsi)
+    try:
+        spy_regime = fetch_spy_regime(session)
+    except Exception as exc:  # noqa: BLE001
+        spy_regime = {"ok": False, "error": str(exc), "source": "SPY vs 200-day SMA"}
+        errors.append(f"SPY regime: {exc}")
+
+    conclusion = build_conclusion(fg, aaii, naaim, vix, rsp_rsi, spy_regime=spy_regime)
     payload = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "fear_greed": fg,
@@ -1135,6 +1413,7 @@ def collect_all(
         "naaim": naaim,
         "vix": vix,
         "rsp_rsi": rsp_rsi,
+        "spy_regime": spy_regime,
         "conclusion": conclusion,
         "errors": errors,
         "cache_policy": {
