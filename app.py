@@ -8,6 +8,7 @@ then scores whether sentiment favors entering the US equity market (contrarian l
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -40,6 +41,16 @@ AAII_CACHE_TTL_SEC = WEEKLY_CACHE_TTL_SEC  # alias
 DATA_DIR = Path(__file__).resolve().parent / "data"
 AAII_CACHE_PATH = DATA_DIR / "aaii_cache.json"
 NAAIM_CACHE_PATH = DATA_DIR / "naaim_cache.json"
+
+# NAAIM current weekly data requires a paid NAAIM Partner subscription (Aug 2026+).
+# Free republishers often freeze on the last public print — exclude from score if older.
+NAAIM_MAX_AGE_DAYS = 14
+# Optional manual override for subscribers: set NAAIM_MANUAL_VALUE=79.7
+# and optionally NAAIM_MANUAL_AS_OF=2026-08-06
+NAAIM_SUBSCRIPTION_NOTE = (
+    "NAAIM current weekly data is subscription-only (effective Aug 1, 2026). "
+    "Free sources often lag or freeze; set NAAIM_MANUAL_VALUE if you have a paid feed."
+)
 
 # Long-term AAII averages (published by AAII)
 AAII_AVG = {"bullish": 37.5, "neutral": 31.5, "bearish": 31.0}
@@ -613,6 +624,123 @@ def fetch_spy_regime(session: requests.Session, window: int = 200) -> dict[str, 
     }
 
 
+def _parse_as_of_date(raw: str | None) -> datetime | None:
+    """Parse common NAAIM as-of date strings to a timezone-aware UTC midnight."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s or s.lower() in ("prior_week", "n/a", "—", "-"):
+        return None
+    # Normalize separators
+    s_norm = s.replace(",", " ").replace("/", "-")
+    s_norm = re.sub(r"\s+", " ", s_norm).strip()
+    formats = (
+        "%Y-%m-%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%m-%d-%Y",
+        "%d %b %Y",
+        "%d %B %Y",
+        "%b %d %Y",
+        "%B %d %Y",
+        "%b %d %Y",
+    )
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(s_norm, fmt)
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    # "Jul 29 2026" already covered; try with weekday prefix stripped
+    m = re.search(
+        r"([A-Za-z]{3,9}\s+\d{1,2}\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
+        s,
+    )
+    if m and m.group(1) != s_norm:
+        return _parse_as_of_date(m.group(1))
+    return None
+
+
+def _annotate_naaim_freshness(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Mark whether NAAIM is fresh enough to enter the live scorecard.
+
+    Since Aug 2026 the official current weekly print is subscription-only.
+    Republishers may still return the last free reading (frozen) — display it
+    but do not let a multi-week-old number move the verdict.
+    """
+    out = dict(data)
+    as_of = out.get("as_of")
+    parsed = _parse_as_of_date(str(as_of) if as_of is not None else None)
+    now = datetime.now(timezone.utc)
+    age_days: float | None = None
+    if parsed is not None:
+        age_days = max(0.0, (now - parsed).total_seconds() / 86400.0)
+    out["data_age_days"] = round(age_days, 1) if age_days is not None else None
+    out["subscription_note"] = NAAIM_SUBSCRIPTION_NOTE
+
+    # Manual override is always usable (subscriber pasted a current value)
+    if out.get("provider") == "manual":
+        out["usable_for_score"] = True
+        out["score_excluded"] = False
+        out["freshness"] = "manual"
+        return out
+
+    if age_days is None:
+        # Unknown as-of → do not score (safer after paywall era)
+        out["usable_for_score"] = False
+        out["score_excluded"] = True
+        out["freshness"] = "unknown_date"
+        out["cache_note"] = (
+            (out.get("cache_note") + " · " if out.get("cache_note") else "")
+            + "NAAIM date unknown — excluded from score (subscription-era free feeds may be frozen)."
+        )
+        return out
+
+    if age_days > NAAIM_MAX_AGE_DAYS:
+        out["usable_for_score"] = False
+        out["score_excluded"] = True
+        out["freshness"] = "too_old"
+        out["stale"] = True
+        out["cache_note"] = (
+            (out.get("cache_note") + " · " if out.get("cache_note") else "")
+            + f"NAAIM as-of {as_of} is {age_days:.0f}d old (max {NAAIM_MAX_AGE_DAYS}d) — "
+            "excluded from score. Free sources froze after NAAIM went subscription-only; "
+            "set NAAIM_MANUAL_VALUE if you have current data."
+        )
+        return out
+
+    out["usable_for_score"] = True
+    out["score_excluded"] = False
+    out["freshness"] = "fresh"
+    return out
+
+
+def _naaim_from_manual_env() -> dict[str, Any] | None:
+    """Optional subscriber override via env vars."""
+    raw = os.environ.get("NAAIM_MANUAL_VALUE", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    as_of = os.environ.get("NAAIM_MANUAL_AS_OF", "").strip() or datetime.now(
+        timezone.utc
+    ).strftime("%Y-%m-%d")
+    prior_raw = os.environ.get("NAAIM_MANUAL_PRIOR", "").strip()
+    prior = float(prior_raw) if prior_raw else None
+    return _annotate_naaim_freshness(
+        _naaim_payload(
+            value=value,
+            as_of=as_of,
+            prior_week=prior,
+            history=[{"date": as_of, "value": round(value, 2)}],
+            provider="manual",
+            source_url="https://naaim.org/programs/naaim-exposure-index/",
+        )
+    )
+
+
 def _naaim_payload(
     *,
     value: float,
@@ -639,6 +767,8 @@ def _naaim_payload(
         "cached": False,
         "stale": False,
         "cache_age_hours": 0.0,
+        "usable_for_score": True,
+        "score_excluded": False,
     }
 
 
@@ -912,23 +1042,40 @@ def _fetch_naaim_network(session: requests.Session) -> dict[str, Any]:
 
 def get_naaim(session: requests.Session, *, force: bool = False) -> dict[str, Any]:
     """
-    Weekly NAAIM with long-lived disk cache.
+    Weekly NAAIM with long-lived disk cache + freshness gate.
 
-    Same policy as AAII: Refresh does not re-hit NAAIM; use refresh_naaim=1 or
+    As of Aug 1, 2026 the official *current* NAAIM print is subscription-only.
+    Free republishers (MacroMicro / YCharts / CEIC) may still return a frozen
+    last-public reading — we show it but exclude from scoring when older than
+    NAAIM_MAX_AGE_DAYS.
+
+    Override for subscribers:
+      NAAIM_MANUAL_VALUE=82.5
+      NAAIM_MANUAL_AS_OF=2026-08-13   (optional)
+      NAAIM_MANUAL_PRIOR=79.7        (optional)
+
+    Refresh policy: Refresh does not re-hit NAAIM; use refresh_naaim=1 or
     refresh_weekly=1 to force a live pull.
-    Primary live source: MacroMicro chart (official site often paywalled).
     """
+    manual = _naaim_from_manual_env()
+    if manual is not None:
+        return manual
+
     cached, saved_ts = _load_weekly_disk_cache(NAAIM_CACHE_PATH)
     age = (time.time() - saved_ts) if saved_ts else None
     fresh_enough = age is not None and age < WEEKLY_CACHE_TTL_SEC
 
     if cached and fresh_enough and not force:
-        return _annotate_weekly_cache(cached, cached=True, saved_ts=saved_ts, stale=False)
+        return _annotate_naaim_freshness(
+            _annotate_weekly_cache(cached, cached=True, saved_ts=saved_ts, stale=False)
+        )
 
     try:
         live = _fetch_naaim_network(session)
         _save_weekly_disk_cache(NAAIM_CACHE_PATH, live)
-        return _annotate_weekly_cache(live, cached=False, saved_ts=time.time(), stale=False)
+        return _annotate_naaim_freshness(
+            _annotate_weekly_cache(live, cached=False, saved_ts=time.time(), stale=False)
+        )
     except Exception as exc:  # noqa: BLE001
         if cached:
             out = _annotate_weekly_cache(
@@ -939,8 +1086,25 @@ def get_naaim(session: requests.Session, *, force: bool = False) -> dict[str, An
             )
             out["error"] = None
             out["cache_note"] = f"Using saved weekly NAAIM (live fetch failed: {exc})"
-            return out
-        raise
+            return _annotate_naaim_freshness(out)
+        # No cache and no free live feed — soft-fail so the rest of the dashboard works
+        return {
+            "source": "NAAIM Exposure Index",
+            "source_url": "https://naaim.org/programs/naaim-exposure-index/",
+            "provider": None,
+            "value": None,
+            "as_of": None,
+            "ok": False,
+            "error": str(exc),
+            "usable_for_score": False,
+            "score_excluded": True,
+            "freshness": "unavailable",
+            "subscription_note": NAAIM_SUBSCRIPTION_NOTE,
+            "cached": False,
+            "stale": False,
+            "cache_age_hours": 0.0,
+            "scale": "-200 leveraged short · 0 cash · 100 fully invested · 200 leveraged long",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1239,10 +1403,17 @@ def build_conclusion(
     rsp_rsi: dict[str, Any],
     spy_regime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # NAAIM: only score when ok AND usable_for_score (fresh or manual override).
+    # Stale free republisher prints (post Aug-2026 paywall freeze) are display-only.
+    naaim_usable = bool(
+        naaim.get("ok")
+        and naaim.get("usable_for_score", True)
+        and naaim.get("value") is not None
+    )
     scores = {
         "fear_greed": score_fear_greed(fg["value"]) if fg.get("ok") else None,
         "aaii": score_aaii(aaii["bullish"], aaii["bearish"]) if aaii.get("ok") else None,
-        "naaim": score_naaim(naaim["value"]) if naaim.get("ok") else None,
+        "naaim": score_naaim(float(naaim["value"])) if naaim_usable else None,
         "vix": score_vix(vix["value"]) if vix.get("ok") else None,
         "rsp_rsi": score_rsp_rsi(rsp_rsi["value"]) if rsp_rsi.get("ok") else None,
     }
@@ -1424,6 +1595,18 @@ def build_conclusion(
     if scores["naaim"]:
         details.append(
             f"NAAIM exposure {naaim['value']}%: {scores['naaim']['signal']}."
+        )
+    elif naaim.get("ok") and naaim.get("score_excluded"):
+        age = naaim.get("data_age_days")
+        age_txt = f"{age:.0f}d old" if age is not None else "date unknown"
+        details.append(
+            f"NAAIM {naaim.get('value')}% as-of {naaim.get('as_of')} ({age_txt}) "
+            "excluded from score — free current data unavailable after NAAIM "
+            "subscription paywall (Aug 2026). Set NAAIM_MANUAL_VALUE to include it."
+        )
+    elif not naaim.get("ok"):
+        details.append(
+            "NAAIM unavailable (subscription-only current print). Score uses remaining gauges."
         )
     if regime_payload and regime_payload.get("applies") and regime_payload.get("note"):
         details.append(regime_payload["note"])

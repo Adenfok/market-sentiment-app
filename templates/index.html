@@ -758,7 +758,7 @@
         <div class="card-head">
           <div>
             <h2>NAAIM Exposure</h2>
-            <div class="src"><a href="https://ycharts.com/indicators/naaim_number" target="_blank" rel="noopener">YCharts</a> / <a href="https://en.macromicro.me/charts/46198/naaim-exposure-index" target="_blank" rel="noopener">MacroMicro</a> · weekly · <span id="naaimCacheTag">cached</span></div>
+            <div class="src"><a href="https://naaim.org/programs/naaim-exposure-index/" target="_blank" rel="noopener">NAAIM</a> (sub) · free mirrors · weekly · <span id="naaimCacheTag">cached</span></div>
           </div>
           <span class="badge" id="naaimBadge">—</span>
         </div>
@@ -799,7 +799,7 @@
         <li><strong style="color:var(--text)">RSP RSI(14)</strong> — ≤30 = <strong style="color:var(--green)">+3</strong> · 30–33 = +2 · 33–40 = +1 · 40–60 = 0 · 60–70 = −1 · ≥70 = −2.</li>
         <li><strong style="color:var(--text)">Fear &amp; Greed</strong> — ≤10 = +3 · 10–25 = +2 · 25–45 fear = −1 (risk-off) · 55–75 greed = +1 (risk-on) · ≥75 = −2 (overhype).</li>
         <li><strong style="color:var(--text)">AAII</strong> — half weight (raw ±2 → ±1, ±1 → ±0.5). Weekly cache ~6 days.</li>
-        <li><strong style="color:var(--text)">NAAIM</strong> — half weight; 64–&lt;98% Strong hold (0); 98–100% take profit (−0.5). Weekly cache ~6 days.</li>
+        <li><strong style="color:var(--text)">NAAIM</strong> — half weight when available; 64–&lt;98% Strong hold (0); 98–100% take profit (−0.5). <em>Current print is subscription-only (Aug 2026+)</em> — free/stale readings (&gt;14d) are shown but <strong>excluded from the score</strong>. Optional env: <code>NAAIM_MANUAL_VALUE</code>.</li>
       </ul>
       <p class="disclaimer" id="disclaimer">
         Educational / research tool only — not investment advice. Sentiment indicators are noisy
@@ -1019,32 +1019,45 @@
         if (cacheTag) cacheTag.textContent = "unavailable";
       }
 
-      // NAAIM (weekly — disk cache; Refresh does not re-hit)
-      if (naaim.ok) {
+      // NAAIM (weekly; may be display-only after Aug 2026 subscription paywall)
+      if (naaim.ok && naaim.value != null) {
         $("naaimValue").innerHTML = naaim.value + `<span class="unit">%</span>`;
         $("naaimPrior").textContent =
           naaim.prior_week != null ? naaim.prior_week : "—";
         $("naaimQ").textContent =
           naaim.quarter_avg != null ? naaim.quarter_avg : "—";
         $("naaimDate").textContent = naaim.as_of || "—";
-        const b = ptsBadge(scores.naaim?.points);
-        $("naaimBadge").textContent = b.text;
-        $("naaimBadge").className = "badge " + b.cls;
+        const excluded = !!naaim.score_excluded || naaim.usable_for_score === false;
+        if (excluded) {
+          $("naaimBadge").textContent = "excluded · stale";
+          $("naaimBadge").className = "badge mid";
+        } else {
+          const b = ptsBadge(scores.naaim?.points);
+          $("naaimBadge").textContent = b.text;
+          $("naaimBadge").className = "badge " + b.cls;
+        }
         // Mode label under the big number
-        const mode = scores.naaim?.label || "Active managers’ avg equity exposure";
+        const mode = excluded
+          ? "Not in score — free current NAAIM is subscription-only"
+          : (scores.naaim?.label || "Active managers’ avg equity exposure");
         const via = naaim.provider ? ` · via ${naaim.provider}` : "";
         $("naaimRating").textContent = mode + via;
         $("naaimRating").className =
           "rating " +
-          (scores.naaim?.points > 0
-            ? "fear"
-            : scores.naaim?.points < 0
-              ? "greed"
-              : "neutral");
+          (excluded
+            ? "neutral"
+            : scores.naaim?.points > 0
+              ? "fear"
+              : scores.naaim?.points < 0
+                ? "greed"
+                : "neutral");
         const meaningEl = $("naaimMeaning");
         if (meaningEl) {
           let meaning;
-          if (naaim.value >= 98 && naaim.value <= 100) {
+          if (excluded) {
+            const age = naaim.data_age_days != null ? `${naaim.data_age_days}d old` : "age unknown";
+            meaning = `Last free print shown (${age}). Score uses other gauges. Optional: NAAIM_MANUAL_VALUE env.`;
+          } else if (naaim.value >= 98 && naaim.value <= 100) {
             meaning = "98–100%: Room to take profit";
           } else if (naaim.value >= 64 && naaim.value < 98) {
             meaning = "64–<98%: Strong hold mode";
@@ -1055,26 +1068,34 @@
           } else {
             meaning = ">100%: Leveraged long — elevated risk (−2)";
           }
-          if (naaim.cached) {
+          if (naaim.cached && !excluded) {
             meaning += ` · saved ${naaim.cache_age_hours ?? "?"}h ago`;
             if (naaim.stale) meaning += " (stale fallback)";
-          } else {
+          } else if (!excluded) {
             meaning += " · just fetched";
           }
           meaningEl.textContent = meaning;
         }
         const cacheTag = $("naaimCacheTag");
         if (cacheTag) {
-          if (naaim.stale) cacheTag.textContent = "stale cache";
+          if (excluded) cacheTag.textContent = "excluded from score";
+          else if (naaim.stale) cacheTag.textContent = "stale cache";
           else if (naaim.cached) cacheTag.textContent = "from cache";
+          else if (naaim.provider === "manual") cacheTag.textContent = "manual";
           else cacheTag.textContent = "live pull";
         }
-        let sig = scores.naaim?.signal || "—";
+        let sig = excluded
+          ? (naaim.subscription_note || "NAAIM excluded from score (stale / paywalled).")
+          : (scores.naaim?.signal || "—");
         if (naaim.cache_note) sig += ` · ${naaim.cache_note}`;
         $("naaimSignal").innerHTML = `<strong>Signal:</strong> ${sig}`;
       } else {
         $("naaimValue").innerHTML = "—";
-        $("naaimSignal").innerHTML = `<strong>Error:</strong> ${naaim.error || "fetch failed"}`;
+        $("naaimSignal").innerHTML =
+          `<strong>Unavailable:</strong> ${naaim.subscription_note || naaim.error || "NAAIM current data is subscription-only."}`;
+        $("naaimBadge").textContent = "n/a";
+        $("naaimBadge").className = "badge mid";
+        $("naaimRating").textContent = "Not in score — no free current print";
         const cacheTag = $("naaimCacheTag");
         if (cacheTag) cacheTag.textContent = "unavailable";
       }

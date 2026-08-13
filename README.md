@@ -12,7 +12,7 @@ Web app that pulls classic market-sentiment gauges and answers:
 | **RSP RSI(14)** | Invesco S&P 500 Equal Weight (Yahoo) | Daily | **≤30 = +3** · 30–33 = +2 · 33–40 = +1 |
 | **Fear & Greed Index** | [CNN](https://edition.cnn.com/markets/fear-and-greed) | Daily | ≤10 = +3 · 10–25 = +2 · fear −1 · greed +1 · ≥75 = −2 overhype |
 | **AAII Survey** | [AAII](https://www.aaii.com/sentimentsurvey) | Weekly | Half weight (raw scores × 0.5) |
-| **NAAIM Exposure** | [MacroMicro](https://en.macromicro.me/charts/46198/naaim-exposure-index) / [YCharts](https://ycharts.com/indicators/naaim_number) / [CEIC](https://www.ceicdata.com/en/united-states/naaim-exposure-index) (official NAAIM is subscription-only for current data) | Weekly | Half weight · Strong hold / take-profit bands |
+| **NAAIM Exposure** | Official current print is **subscription-only** (Aug 1, 2026+). Free mirrors may freeze on last public reading — **excluded from score if &gt;14 days old**. Optional: set `NAAIM_MANUAL_VALUE` | Weekly | Half weight when fresh/manual · Strong hold / take-profit bands |
 
 **Hard override:** when **VIX > 30**, verdict is at least **Favorable to Enter** (even if other gauges are mixed).
 
@@ -96,6 +96,23 @@ Outputs in `data/backtest/`:
 - `forward_buckets_21d.csv` — 21-day forward returns by verdict
 
 **Weekly caches (AAII + NAAIM):** stored under `data/*_cache.json` for ~6 days. Normal **Refresh** re-pulls only **VIX / RSP / Fear & Greed**.
+
+### NAAIM after the Aug 2026 paywall
+
+NAAIM’s *current* weekly Exposure Index is no longer free on [naaim.org](https://naaim.org/programs/naaim-exposure-index/). Free republishers often stop updating. The app:
+
+1. Still tries MacroMicro / YCharts / CEIC for a last-known print (display only if stale).
+2. **Excludes NAAIM from the total score** when `as_of` is older than **14 days**.
+3. Lets subscribers inject a current value:
+
+```powershell
+$env:NAAIM_MANUAL_VALUE = "82.5"
+$env:NAAIM_MANUAL_AS_OF = "2026-08-13"   # optional
+$env:NAAIM_MANUAL_PRIOR = "79.7"         # optional
+python app.py
+```
+
+On Render: set the same variables under **Environment**.
 
 ## Deploy on Render (always online)
 
