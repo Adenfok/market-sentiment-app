@@ -515,10 +515,31 @@ def compute_rsi(closes: list[float], period: int = 14) -> float | None:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
+def _ny_date_from_ts(ts: int | float) -> datetime.date:
+    """Calendar date in America/New_York for a Yahoo chart timestamp."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.fromtimestamp(float(ts), tz=ZoneInfo("America/New_York")).date()
+    except Exception:  # noqa: BLE001
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).date()
+
+
+def _today_ny() -> datetime.date:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/New_York")).date()
+    except Exception:  # noqa: BLE001
+        return datetime.now(timezone.utc).date()
+
+
 def fetch_rsp_rsi(session: requests.Session, period: int = 14) -> dict[str, Any]:
     """
     RSP (Invesco S&P 500 Equal Weight ETF) daily RSI(14) via Yahoo Finance.
-    Equal-weight S&P is a broader market-breadth-style pulse than cap-weighted SPY.
+
+    Uses Wilder RSI. Incorporates Yahoo regularMarketPrice into the series so
+    the RSI matches the live quote (not stuck on the prior session's close).
     """
     url = "https://query1.finance.yahoo.com/v8/finance/chart/RSP?interval=1d&range=6mo"
     r = session.get(url, timeout=20)
@@ -541,19 +562,53 @@ def fetch_rsp_rsi(session: requests.Session, period: int = 14) -> dict[str, Any]
     if len(pairs) < period + 2:
         raise ValueError(f"Need at least {period + 2} RSP closes for RSI")
 
-    closes = [c for _, c in pairs]
+    daily_closes = [c for _, c in pairs]
+    last_daily = daily_closes[-1]
+    last_bar_date = _ny_date_from_ts(pairs[-1][0])
+    today = _today_ny()
+
+    live_raw = meta.get("regularMarketPrice")
+    live_price = float(live_raw) if live_raw is not None else last_daily
+
+    # Build the price series used for RSI:
+    # - If last daily bar is *today*, replace it with the live quote (intraday update).
+    # - If last daily bar is an earlier session and live differs, append live as the
+    #   forming bar (this was the 70.5 vs ~62 bug: RSI on Fri close, price = Mon live).
+    closes = list(daily_closes)
+    used_live = False
+    if abs(live_price - last_daily) > 0.005:
+        if last_bar_date == today:
+            closes[-1] = live_price
+            used_live = True
+        else:
+            closes.append(live_price)
+            used_live = True
+
     rsi = compute_rsi(closes, period=period)
     if rsi is None:
         raise ValueError("Could not compute RSP RSI")
 
-    # Prior RSI snapshots: drop last 5 and last 21 closes and recompute
-    rsi_1w = compute_rsi(closes[:-5], period=period) if len(closes) > period + 6 else None
-    rsi_1m = compute_rsi(closes[:-21], period=period) if len(closes) > period + 22 else None
+    # Priors from completed daily bars only (stable history)
+    rsi_1w = (
+        compute_rsi(daily_closes[:-5], period=period)
+        if len(daily_closes) > period + 6
+        else None
+    )
+    rsi_1m = (
+        compute_rsi(daily_closes[:-21], period=period)
+        if len(daily_closes) > period + 22
+        else None
+    )
+    # Last completed session RSI (before live overlay) — useful for debugging
+    rsi_last_close = compute_rsi(daily_closes, period=period)
 
-    price = float(meta.get("regularMarketPrice") or closes[-1])
-    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-    last_ts = pairs[-1][0]
-    as_of = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    # Prefer prior daily close from the series (Yahoo chartPreviousClose is often wrong)
+    prev_close = daily_closes[-2] if len(daily_closes) >= 2 else None
+    if used_live and last_bar_date != today:
+        # Forming a new session → previous close is the last daily bar
+        prev_close = last_daily
+
+    as_of = today.isoformat() if used_live else last_bar_date.isoformat()
 
     return {
         "source": "RSP RSI(14)",
@@ -562,14 +617,17 @@ def fetch_rsp_rsi(session: requests.Session, period: int = 14) -> dict[str, Any]
         "name": "Invesco S&P 500 Equal Weight ETF",
         "period": period,
         "value": round(float(rsi), 1),
-        "price": round(price, 2),
+        "price": round(live_price, 2),
         "previous_close": round(float(prev_close), 2) if prev_close is not None else None,
         "previous_1_week": round(float(rsi_1w), 1) if rsi_1w is not None else None,
         "previous_1_month": round(float(rsi_1m), 1) if rsi_1m is not None else None,
         "as_of": as_of,
+        "last_close": round(last_daily, 2),
+        "last_close_rsi": round(float(rsi_last_close), 1) if rsi_last_close is not None else None,
+        "includes_live_price": used_live,
         "oversold": float(rsi) <= 30,
         "overbought": float(rsi) >= 70,
-        "scale": "RSI(14): ≤30 oversold (entry favor) · ≥70 overbought (caution)",
+        "scale": "Wilder RSI(14) · uses latest Yahoo price (not stuck on prior close)",
         "ok": True,
         "error": None,
     }

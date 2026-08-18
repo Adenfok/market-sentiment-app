@@ -911,8 +911,13 @@
         $("rspRating").className =
           "rating " + (os ? "fear" : ob ? "greed" : "neutral");
         $("rspNeedle").style.left = Math.max(0, Math.min(100, rsp.value)) + "%";
-        $("rspDeltas").textContent =
+        let delta =
           `Price $${rsp.price ?? "—"} · 1w RSI ${rsp.previous_1_week ?? "—"} · 1m ${rsp.previous_1_month ?? "—"} · ≤30=+3 · 30–33=+2 · 33–40=+1`;
+        if (rsp.includes_live_price && rsp.last_close_rsi != null) {
+          delta =
+            `Live $${rsp.price ?? "—"} (RSI ${rsp.value}) · prior close $${rsp.last_close ?? "—"} RSI ${rsp.last_close_rsi} · 1w ${rsp.previous_1_week ?? "—"}`;
+        }
+        $("rspDeltas").textContent = delta;
         const b = ptsBadge(scores.rsp_rsi?.points);
         $("rspBadge").textContent = deep ? "+3 OVERSOLD" : os ? "+2 OVERSOLD" : ob ? "-2 OVERBOUGHT" : b.text;
         $("rspBadge").className = "badge " + (os ? "pos" : ob ? "neg" : b.cls);
