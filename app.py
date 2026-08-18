@@ -1,8 +1,12 @@
 """
 US Equity Market Sentiment Dashboard
 ------------------------------------
-Tracks CNN Fear & Greed, AAII Investor Sentiment Survey, and NAAIM Exposure Index,
+Tracks VIX, RSP RSI(14), CNN Fear & Greed, and AAII Investor Sentiment,
 then scores whether sentiment favors entering the US equity market (contrarian lens).
+
+NAAIM Exposure Index is no longer part of the live scorecard (current print is
+subscription-only as of Aug 2026). Fetch helpers remain in this module for
+optional/historical use only.
 """
 
 from __future__ import annotations
@@ -1398,22 +1402,18 @@ def suggested_equity_weight(
 def build_conclusion(
     fg: dict[str, Any],
     aaii: dict[str, Any],
-    naaim: dict[str, Any],
+    naaim: dict[str, Any] | None,
     vix: dict[str, Any],
     rsp_rsi: dict[str, Any],
     spy_regime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # NAAIM: only score when ok AND usable_for_score (fresh or manual override).
-    # Stale free republisher prints (post Aug-2026 paywall freeze) are display-only.
-    naaim_usable = bool(
-        naaim.get("ok")
-        and naaim.get("usable_for_score", True)
-        and naaim.get("value") is not None
-    )
+    # Live scorecard is 4 gauges: VIX + RSP RSI + Fear & Greed + AAII.
+    # NAAIM is intentionally omitted (subscription-only current print, Aug 2026+).
+    _ = naaim  # kept in signature for API compatibility; never scored
     scores = {
         "fear_greed": score_fear_greed(fg["value"]) if fg.get("ok") else None,
         "aaii": score_aaii(aaii["bullish"], aaii["bearish"]) if aaii.get("ok") else None,
-        "naaim": score_naaim(float(naaim["value"])) if naaim_usable else None,
+        "naaim": None,  # retired from live scorecard
         "vix": score_vix(vix["value"]) if vix.get("ok") else None,
         "rsp_rsi": score_rsp_rsi(rsp_rsi["value"]) if rsp_rsi.get("ok") else None,
     }
@@ -1439,16 +1439,13 @@ def build_conclusion(
     # Hard override uses VIX > 30 (not only the +3 panic band at >40)
     vix_entry = bool(vix.get("ok") and vix.get("value", 0) > 30)
 
-    # Verdict from total score (points can be half-integers with AAII/NAAIM ×0.5)
+    # Verdict from total score (4-gauge card; AAII half-weight → half-integers)
     #   Strong Buy Zone              total ≥ +6
     #   Favorable to Enter           total ≥ +2  AND confirmed (VIX pts≥2 OR RSI pts≥2)
     #   Neutral — Hold / Selective   total ≥  0  (or total≥2 but unconfirmed)
     #   Soft Caution                 total ≥ −2.5 and < 0
     #   Hard Caution                 total ≥ −5  and < −2.5
     #   Poor Entry Zone (avoid)      total < −5
-    #
-    # Confirmed Favorable (backtest 2021–2026-06): hit ~76% / mean ~+3.3% 21d
-    # Avoid total < -5 (10y): 21d down ~42%, mean ~0 (slightly negative)
     vix_pts = float(scores["vix"]["points"]) if scores["vix"] else 0.0
     rsi_pts = float(scores["rsp_rsi"]["points"]) if scores["rsp_rsi"] else 0.0
     favorable_confirmed = (vix_pts >= 2.0) or (rsi_pts >= 2.0)
@@ -1592,22 +1589,7 @@ def build_conclusion(
             f"AAII bull {aaii['bullish']}% / bear {aaii['bearish']}% "
             f"(spread {aaii['spread']:+.1f} pts): {scores['aaii']['signal']}."
         )
-    if scores["naaim"]:
-        details.append(
-            f"NAAIM exposure {naaim['value']}%: {scores['naaim']['signal']}."
-        )
-    elif naaim.get("ok") and naaim.get("score_excluded"):
-        age = naaim.get("data_age_days")
-        age_txt = f"{age:.0f}d old" if age is not None else "date unknown"
-        details.append(
-            f"NAAIM {naaim.get('value')}% as-of {naaim.get('as_of')} ({age_txt}) "
-            "excluded from score — free current data unavailable after NAAIM "
-            "subscription paywall (Aug 2026). Set NAAIM_MANUAL_VALUE to include it."
-        )
-    elif not naaim.get("ok"):
-        details.append(
-            "NAAIM unavailable (subscription-only current print). Score uses remaining gauges."
-        )
+
     if regime_payload and regime_payload.get("applies") and regime_payload.get("note"):
         details.append(regime_payload["note"])
     details.append(
@@ -1655,14 +1637,15 @@ DISCLAIMER = (
 def collect_all(
     force: bool = False,
     force_aaii: bool = False,
-    force_naaim: bool = False,
+    force_naaim: bool = False,  # noqa: ARG001 — kept for API compat; NAAIM not fetched
 ) -> dict[str, Any]:
     """
     force: re-fetch daily/live gauges (ignores 5‑min cache).
-    force_aaii / force_naaim: re-fetch weekly gauges (normally skipped for 6 days).
+    force_aaii: re-fetch AAII weekly (normally skipped for 6 days).
+    force_naaim: ignored — NAAIM retired from live scorecard / UI.
     """
     now = time.time()
-    weekly_force = force_aaii or force_naaim
+    weekly_force = force_aaii
     if (
         not force
         and not weekly_force
@@ -1680,7 +1663,7 @@ def collect_all(
         fg = {"ok": False, "error": str(exc), "source": "CNN Fear & Greed Index"}
         errors.append(f"Fear & Greed: {exc}")
 
-    # Weekly surveys — disk-cached; normal Refresh does not re-hit these
+    # Weekly AAII — disk-cached; normal Refresh does not re-hit
     try:
         aaii = get_aaii(session, force=force_aaii)
     except Exception as exc:  # noqa: BLE001
@@ -1693,17 +1676,21 @@ def collect_all(
         }
         errors.append(f"AAII: {exc}")
 
-    try:
-        naaim = get_naaim(session, force=force_naaim)
-    except Exception as exc:  # noqa: BLE001
-        naaim = {
-            "ok": False,
-            "error": str(exc),
-            "source": "NAAIM Exposure Index",
-            "cached": False,
-            "stale": False,
-        }
-        errors.append(f"NAAIM: {exc}")
+    # NAAIM retired from live card (subscription-only current print)
+    naaim = {
+        "ok": False,
+        "retired": True,
+        "usable_for_score": False,
+        "score_excluded": True,
+        "source": "NAAIM Exposure Index",
+        "error": None,
+        "subscription_note": (
+            "NAAIM removed from the live scorecard — current weekly print is "
+            "subscription-only (Aug 2026+)."
+        ),
+        "cached": False,
+        "stale": False,
+    }
 
     try:
         vix = fetch_vix(session)
@@ -1734,11 +1721,16 @@ def collect_all(
         "spy_regime": spy_regime,
         "conclusion": conclusion,
         "errors": errors,
+        "scorecard": {
+            "gauges": ["vix", "rsp_rsi", "fear_greed", "aaii"],
+            "retired": ["naaim"],
+            "note": "Live scorecard is 4 gauges (NAAIM retired after Aug 2026 paywall).",
+        },
         "cache_policy": {
             "live_ttl_sec": CACHE_TTL_SEC,
             "weekly_ttl_sec": WEEKLY_CACHE_TTL_SEC,
             "aaii_from_cache": bool(aaii.get("cached")),
-            "naaim_from_cache": bool(naaim.get("cached")),
+            "naaim_from_cache": False,
         },
     }
     _CACHE["ts"] = now
@@ -1759,17 +1751,14 @@ def index():
 def api_sentiment():
     from flask import request
 
-    # refresh=1 → re-pull daily gauges only (VIX / F&G / RSP)
-    # refresh_aaii=1 / refresh_naaim=1 → force that weekly series
-    # refresh_weekly=1 → force both AAII + NAAIM
+    # refresh=1 → re-pull daily gauges (VIX / F&G / RSP / SPY regime)
+    # refresh_aaii=1 / refresh_weekly=1 → force AAII weekly re-pull
     force = request.args.get("refresh") == "1"
     force_weekly = request.args.get("refresh_weekly") == "1"
     force_aaii = force_weekly or request.args.get("refresh_aaii") == "1"
-    force_naaim = force_weekly or request.args.get("refresh_naaim") == "1"
     data = collect_all(
-        force=force or force_aaii or force_naaim,
+        force=force or force_aaii,
         force_aaii=force_aaii,
-        force_naaim=force_naaim,
     )
     return jsonify(data)
 
@@ -1780,8 +1769,6 @@ def health():
 
 
 if __name__ == "__main__":
-    import os
-
     # Warm cache once at startup for snappier first paint
     try:
         collect_all(force=True)
@@ -1792,6 +1779,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5050"))
     # 0.0.0.0 required on Render / cloud hosts; local still works via localhost
     host = os.environ.get("HOST", "0.0.0.0")
-    print("\n  US Equity Sentiment Dashboard")
+    print("\n  US Equity Sentiment Dashboard (4-gauge: VIX · RSP RSI · F&G · AAII)")
     print(f"  Listening on http://{host}:{port}\n")
     app.run(host=host, port=port, debug=False)

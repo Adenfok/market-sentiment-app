@@ -4,7 +4,7 @@ Web app that pulls classic market-sentiment gauges and answers:
 
 > **Is it a good time to enter the US equity market?**
 
-## Indicators
+## Indicators (live 4-gauge scorecard)
 
 | Indicator | Source | Cadence | Contrarian read |
 |-----------|--------|---------|-----------------|
@@ -12,7 +12,8 @@ Web app that pulls classic market-sentiment gauges and answers:
 | **RSP RSI(14)** | Invesco S&P 500 Equal Weight (Yahoo) | Daily | **≤30 = +3** · 30–33 = +2 · 33–40 = +1 |
 | **Fear & Greed Index** | [CNN](https://edition.cnn.com/markets/fear-and-greed) | Daily | ≤10 = +3 · 10–25 = +2 · fear −1 · greed +1 · ≥75 = −2 overhype |
 | **AAII Survey** | [AAII](https://www.aaii.com/sentimentsurvey) | Weekly | Half weight (raw scores × 0.5) |
-| **NAAIM Exposure** | Official current print is **subscription-only** (Aug 1, 2026+). Free mirrors may freeze on last public reading — **excluded from score if &gt;14 days old**. Optional: set `NAAIM_MANUAL_VALUE` | Weekly | Half weight when fresh/manual · Strong hold / take-profit bands |
+
+**NAAIM** is **not** in the live scorecard. The current weekly Exposure Index became **subscription-only** on Aug 1, 2026; free mirrors froze on the last public print.
 
 **Hard override:** when **VIX > 30**, verdict is at least **Favorable to Enter** (even if other gauges are mixed).
 
@@ -44,14 +45,12 @@ Open **http://127.0.0.1:5050**
 
 - API: `/api/sentiment`
 - Force refresh (daily gauges only): `/api/sentiment?refresh=1`
-- Force AAII weekly re-pull: `/api/sentiment?refresh_aaii=1`
-- Force NAAIM weekly re-pull: `/api/sentiment?refresh_naaim=1`
-- Force both weekly: `/api/sentiment?refresh_weekly=1`
+- Force AAII weekly re-pull: `/api/sentiment?refresh_aaii=1` or `refresh_weekly=1`
 - Health: `/health`
 
 ## Backtest (scorecard effectiveness)
 
-10-year SPY backtest using the **same scoring rules** as the live app.
+10-year SPY backtest using the **same 4-gauge scoring rules** as the live app (VIX + RSP RSI + F&G + AAII). Historical NAAIM Excel is optional and **not scored**.
 
 ### Historical inputs (recommended)
 
@@ -59,7 +58,6 @@ Copy files here (default names):
 
 ```
 market-sentiment-app/data/historical/aaii_sentiment.xlsx
-market-sentiment-app/data/historical/naaim_exposure.xlsx
 market-sentiment-app/data/historical/fear-greed.csv
 ```
 
@@ -75,13 +73,11 @@ Or pass any path:
 ```powershell
 python backtest.py --years 10 `
   --aaii "C:\Users\you\Downloads\AAII sentiment.xlsx" `
-  --naaim "C:\Users\you\Downloads\NAAIM_Data.xlsx" `
   --fng "C:\Users\you\Downloads\fear-greed.csv"
 ```
 
 **Expected formats**
 - **AAII:** sheet `SENTIMENT` with Date / Bullish / Neutral / Bearish
-- **NAAIM:** first sheet with Date + Mean/Average or NAAIM Number
 - **F&G:** `Date,Fear Greed,Rating` (GitHub canonical CSV)
 
 ```powershell
@@ -95,24 +91,7 @@ Outputs in `data/backtest/`:
 - `equity_curves.csv` — strategy equities
 - `forward_buckets_21d.csv` — 21-day forward returns by verdict
 
-**Weekly caches (AAII + NAAIM):** stored under `data/*_cache.json` for ~6 days. Normal **Refresh** re-pulls only **VIX / RSP / Fear & Greed**.
-
-### NAAIM after the Aug 2026 paywall
-
-NAAIM’s *current* weekly Exposure Index is no longer free on [naaim.org](https://naaim.org/programs/naaim-exposure-index/). Free republishers often stop updating. The app:
-
-1. Still tries MacroMicro / YCharts / CEIC for a last-known print (display only if stale).
-2. **Excludes NAAIM from the total score** when `as_of` is older than **14 days**.
-3. Lets subscribers inject a current value:
-
-```powershell
-$env:NAAIM_MANUAL_VALUE = "82.5"
-$env:NAAIM_MANUAL_AS_OF = "2026-08-13"   # optional
-$env:NAAIM_MANUAL_PRIOR = "79.7"         # optional
-python app.py
-```
-
-On Render: set the same variables under **Environment**.
+**Weekly AAII cache:** stored under `data/aaii_cache.json` for ~6 days. Normal **Refresh** re-pulls only **VIX / RSP / Fear & Greed** (and SPY regime).
 
 ## Deploy on Render (always online)
 

@@ -486,11 +486,11 @@ def build_panel(
             row.pts_aaii = float(sa["points"])
             total += row.pts_aaii
             n += 1
+            # NAAIM intentionally not scored — live scorecard is 4 gauges (Aug 2026+).
+        # Historical NAAIM may still be loaded onto the row for diagnostics only.
         if row.naaim is not None:
             sn = score_naaim(row.naaim)
             row.pts_naaim = float(sn["points"])
-            total += row.pts_naaim
-            n += 1
 
         row.total = total
         row.n_signals = n
@@ -518,18 +518,18 @@ def verdict_from_total(
     """
     Map points → verdict (aligned with app.build_conclusion).
 
-    App (5 gauges): strong≥6, fav≥2 + confirm, neut≥0,
+    App (4 gauges: VIX+RSI+F&G+AAII): strong≥6, fav≥2 + confirm, neut≥0,
     soft_caution ≥−2.5, hard_caution ≥−5, avoid <−5.
     Favorable requires total≥2 AND (VIX pts≥2 OR RSI pts≥2).
     VIX > 30 (entry_zone) floors at favorable (implies VIX pts≥2).
     Scale strong/fav/caution thresholds if fewer gauges (backtest partial panels).
     """
-    scale = max(n_signals, 1) / 5.0
+    scale = max(n_signals, 1) / 4.0
     strong = max(2, int(round(6 * scale)))
     fav = max(1, int(round(2 * scale)))
     # Full panel: soft −2.5, avoid −5; scale for partial panels
-    soft_cut = SOFT_CAUTION_FLOOR * scale  # 5 gauges → -2.5
-    avoid_cut = min(-2.0, AVOID_CUT * scale)  # 5 gauges → -5
+    soft_cut = SOFT_CAUTION_FLOOR * scale  # 4 gauges → -2.5
+    avoid_cut = min(-2.0, AVOID_CUT * scale)  # 4 gauges → -5
 
     if total >= strong:
         v = "strong_buy"
@@ -796,8 +796,8 @@ def effectiveness_scorecard(core: TradeStats, bh: TradeStats, buckets: list[dict
         "shallower_drawdown": core.max_drawdown > bh.max_drawdown,
         "bucket_separation_21d": separation,
         "notes": [
-            "Score rules match app.py (VIX, RSP RSI, F&G, AAII, NAAIM when data present).",
-            "Weekly AAII/NAAIM are forward-filled onto daily SPY bars.",
+            "Score rules match app.py (VIX, RSP RSI, F&G, AAII). NAAIM not scored.",
+            "Weekly AAII is forward-filled onto daily SPY bars.",
             "Fear & Greed included only when CNN history downloads successfully.",
             "No transaction costs, taxes, or slippage modeled (optimistic).",
             "Cash earns 0% (conservative vs T-bills).",
@@ -1004,8 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
         gauges.append("Fear&Greed")
     if any(r.aaii_bull is not None for r in rows):
         gauges.append("AAII")
-    if any(r.naaim is not None for r in rows):
-        gauges.append("NAAIM")
+    # NAAIM may be present historically but is not part of the live-aligned scorecard
     print("Signals used:", " + ".join(gauges))
 
     strategies = [
